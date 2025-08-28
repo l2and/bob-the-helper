@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <style>
+        body {
+            width: 350px;
+            padding: 20px;
+            font-family: Arial, sans-serif;
+        }
+        .header {
+            text-align: center;
+            color: #8B4513;
+            margin-bottom: 20px;
+        }
+        .config-section {
+            margin-bottom: 15px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+            color: #333;
+        }
+        input[type="url"] {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+        button {
+            background-color: #8B4513;
+            color: white;
+            padding: 10px 15px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-right: 10px;
+        }
+        button:hover {
+            background-color: #A0522D;
+        }
+        .status {
+            margin-top: 10px;
+            padding: 10px;
+            border-radius: 4px;
+            display: none;
+        }
+        .status.success {
+            background-color: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .status.error {
+            background-color: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        .instructions {
+            font-size: 12px;
+            color: #666;
+            margin-top: 15px;
+            line-height: 1.4;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h2>🎨 Bob Ross Helper</h2>
+    </div>
+    
+    <div class="config-section">
+        <label for="endpoint">LangChain Endpoint URL:</label>
+        <input type="url" id="endpoint" placeholder="https://your-langchain-endpoint.com/api">
+    </div>
+    
+    <div class="config-section">
+        <button id="save">Save Configuration</button>
+        <button id="test">Test Connection</button>
+    </div>
+    
+    <div id="status" class="status"></div>
+    
+    <div class="instructions">
+        <strong>How to use:</strong>
+        <ol>
+            <li>Configure your LangChain endpoint above</li>
+            <li>Highlight any text on a webpage</li>
+            <li>Right-click and select "Bob Ross, HELP! 🎨"</li>
+            <li>Get encouraging Bob Ross-style explanations!</li>
+        </ol>
+    </div>
+    
+    <script src="popup.js"></script>
+</body>
+</html>

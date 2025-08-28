@@ -1,0 +1,7 @@
+Flask
+langchain
+langchain-anthropic
+langchain-core
+langchain-community
+gunicorn
+langsmith
