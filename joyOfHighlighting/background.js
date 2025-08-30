@@ -54,13 +54,13 @@ async function queryLangChain(text) {
   
   // Default to local development endpoint if not configured
   if (!endpoint) {
-    endpoint = 'http://localhost:8080/BobRossHelp';
+    endpoint = 'http://127.0.0.1:8080/BobRossHelp';
     // Save the default endpoint for future use
     chrome.storage.sync.set({ langchainEndpoint: endpoint });
   }
   
-  console.log('Sending request to:', endpoint);
-  console.log('Request payload:', { text: text });
+  console.log('🌐 Sending request to:', endpoint);
+  console.log('📦 Request payload:', { text: text });
   
   // Send request in format expected by Flask app
   const response = await fetch(endpoint, {
@@ -70,8 +70,12 @@ async function queryLangChain(text) {
     },
     body: JSON.stringify({
       text: text
-    })
+    }),
+    mode: 'cors'  // Explicitly enable CORS
   });
+  
+  console.log('📡 Response status:', response.status);
+  console.log('📡 Response headers:', [...response.headers.entries()]);
   
   if (!response.ok) {
     const errorText = await response.text();
