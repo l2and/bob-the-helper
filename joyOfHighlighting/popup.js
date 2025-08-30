@@ -4,10 +4,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     const testButton = document.getElementById('test');
     const statusDiv = document.getElementById('status');
 
-    // Load saved endpoint
+    // Load saved endpoint or set default
     const result = await chrome.storage.sync.get(['langchainEndpoint']);
     if (result.langchainEndpoint) {
         endpointInput.value = result.langchainEndpoint;
+    } else {
+        // Set default endpoint for local development
+        endpointInput.value = 'http://localhost:8080/BobRossHelp';
     }
 
     saveButton.addEventListener('click', async () => {
