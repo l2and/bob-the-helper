@@ -9,13 +9,12 @@ from dotenv import load_dotenv
 dotenv_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env')
 print(f"🔧 Loading environment variables from: {dotenv_path}")
 load_dotenv(dotenv_path)
-from langgraph_agent import get_agent
 from flask import Flask, jsonify, request
 from flask_cors import CORS
-from langchain_core.output_parsers import StrOutputParser
-from langsmith import Client
 from langchain_anthropic import ChatAnthropic
+from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
+from langsmith import Client
 from typing import Dict, Any, Callable
 from logger_config import setup_logger
 
@@ -182,11 +181,11 @@ def health_check():
 
 @app.route('/BobRossHelp', methods=['POST'])
 def bob_ross_help():
-    """Main endpoint - now powered by LangGraph agent"""
+    """Main endpoint for getting Bob Ross-style help"""
     try:
         logger.info("🎨 Received Bob Ross help request")
         
-        # Validate request (keep your existing validation logic)
+        # Validate request
         logger.info("Validating incoming request format")
         if not request.is_json:
             logger.warning("Request rejected: Content-Type is not application/json")
@@ -205,45 +204,65 @@ def bob_ross_help():
         text_preview = selected_text[:100] + "..." if len(selected_text) > 100 else selected_text
         logger.info(f"📝 Processing text ({len(selected_text)} chars): {text_preview}")
         
-        # NEW: Initialize LangGraph agent instead of LLM + chain
-        logger.info("🤖 Initializing LangGraph agent")
-        agent = get_agent()
-        logger.info("✅ LangGraph agent initialized successfully")
+        # Initialize LLM
+        logger.info("🤖 Initializing Claude LLM connection")
+        llm = create_llm()
+        logger.info("✅ Claude LLM initialized successfully")
         
-        # NEW: Process with LangGraph workflow
-        logger.info("🔗 Starting LangGraph multi-step workflow")
-        logger.info("✅ Workflow: Classify → Retrieve → Generate")
+        # Try to use LangSmith prompt first, fallback to local prompt
+        prompt = FALLBACK_PROMPT
+        prompt_source = "fallback"
         
-        # Invoke the agent
-        logger.info("🚀 Sending request to LangGraph agent")
-        result = agent.process_highlighted_text(selected_text)
+        if client:
+            try:
+                logger.info("📋 Attempting to load LangSmith prompt template")
+                langsmith_prompt = client.pull_prompt("l2and/bob_ross_help", include_model=False)  # Don't include model
+                
+                # Check if it's a proper prompt template
+                if hasattr(langsmith_prompt, 'invoke') and hasattr(langsmith_prompt, 'input_variables'):
+                    prompt = langsmith_prompt
+                    prompt_source = "langsmith"
+                    logger.info("✅ LangSmith prompt loaded successfully")
+                    logger.info("📋 Using prompt: l2and/bob_ross_help (LangSmith)")
+                else:
+                    logger.warning("⚠️ LangSmith prompt format incompatible, using fallback")
+                    prompt = FALLBACK_PROMPT
+                    prompt_source = "fallback"
+                    logger.info("📋 Using prompt: Fallback (Local)")
+                    
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to load LangSmith prompt, using fallback: {e}")
+                prompt = FALLBACK_PROMPT
+                prompt_source = "fallback"
+                logger.info("📋 Using prompt: Fallback (Local)")
+        else:
+            logger.info("📋 Using fallback prompt (LangSmith client not available)")
+            logger.info("📋 Using prompt: Fallback (Local)")
         
-        # Extract the response and log details
-        analysis = result.get("analysis", "")
-        query_type = result.get("query_type", "unknown")
-        processing_steps = result.get("processing_steps", [])
+        # Create the chain following LangChain best practices
+        logger.info("🔗 Building LangChain processing pipeline")
+        chain = prompt | llm | StrOutputParser()
+        logger.info("✅ Pipeline created: Prompt → Claude → String Parser")
         
-        logger.info(f"✅ Received response from LangGraph agent ({len(analysis)} chars)")
-        logger.info(f"🎯 Classified as: {query_type}")
-        logger.info(f"📊 Processing steps: {len(processing_steps)}")
+        # Invoke with proper input format
+        logger.info("🚀 Sending request to Claude API")
+        result = chain.invoke({"question": selected_text})
+        logger.info(f"✅ Received response from Claude ({len(result)} chars)")
         
-        response_preview = analysis[:300] + "..." if len(analysis) > 150 else analysis
+        response_preview = result[:150] + "..." if len(result) > 150 else result
         logger.info(f"📤 Response preview: {response_preview}")
         
-        logger.info("🎉 LangGraph workflow completed successfully")
+        logger.info("🎉 Request completed successfully")
         
         return jsonify({
-            "analysis": analysis,
+            "analysis": result,
             "original_text": selected_text,
             "status": "success",
-            "query_type": query_type,
-            "processing_steps": processing_steps,
-            "source": "langgraph_agent",
+            "source": prompt_source,
             "processing_info": {
                 "text_length": len(selected_text),
-                "response_length": len(analysis),
-                "workflow": "classify → retrieve → generate",
-                "agent_type": "LangGraph Multi-Step Agent"
+                "response_length": len(result),
+                "prompt_source": prompt_source
             }
         })
     
