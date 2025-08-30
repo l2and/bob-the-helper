@@ -22,7 +22,9 @@ from logger_config import setup_logger
 logger = setup_logger(__name__)
 
 app = Flask(__name__)
-CORS(app)  # Enable CORS for Chrome extension
+# Enable CORS for Chrome extension with explicit configuration
+CORS(app, origins=["*"], methods=["GET", "POST", "OPTIONS"], 
+     allow_headers=["Content-Type", "Authorization"])
 
 
 def run_with_timeout(func: Callable, timeout_seconds: int = 30, *args, **kwargs):

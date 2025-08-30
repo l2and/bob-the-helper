@@ -10,7 +10,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         endpointInput.value = result.langchainEndpoint;
     } else {
         // Set default endpoint for local development
-        endpointInput.value = 'http://localhost:8080/BobRossHelp';
+        endpointInput.value = 'http://127.0.0.1:8080/BobRossHelp';
     }
 
     saveButton.addEventListener('click', async () => {

@@ -107,8 +107,74 @@ function showResultModal(result) {
   title.textContent = '🎨 Bob Ross Helper';
   title.style.cssText = 'margin: 0; color: white; font-size: 18px; font-weight: bold;';
 
+  // Header buttons container
+  const buttonsContainer = document.createElement('div');
+  buttonsContainer.style.cssText = 'display: flex; gap: 8px; align-items: center;';
+
+  // Copy button
+  const copyBtn = document.createElement('button');
+  copyBtn.textContent = '📋';
+  copyBtn.title = 'Copy to clipboard';
+  copyBtn.style.cssText = `
+    background: rgba(255, 255, 255, 0.2);
+    border: 2px solid white;
+    border-radius: 6px;
+    width: 32px;
+    height: 32px;
+    font-size: 16px;
+    cursor: pointer;
+    color: white;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s ease;
+  `;
+  copyBtn.onmouseover = () => {
+    copyBtn.style.background = 'rgba(255, 255, 255, 0.3)';
+    copyBtn.style.transform = 'scale(1.1)';
+  };
+  copyBtn.onmouseout = () => {
+    copyBtn.style.background = 'rgba(255, 255, 255, 0.2)';
+    copyBtn.style.transform = 'scale(1)';
+  };
+  copyBtn.onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(result);
+      // Visual feedback
+      const originalText = copyBtn.textContent;
+      copyBtn.textContent = '✓';
+      copyBtn.style.background = 'rgba(0, 255, 0, 0.3)';
+      setTimeout(() => {
+        copyBtn.textContent = originalText;
+        copyBtn.style.background = 'rgba(255, 255, 255, 0.2)';
+      }, 1000);
+      console.log('✅ Text copied to clipboard');
+    } catch (err) {
+      console.error('❌ Failed to copy text:', err);
+      // Fallback for older browsers
+      const textArea = document.createElement('textarea');
+      textArea.value = result;
+      document.body.appendChild(textArea);
+      textArea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textArea);
+      
+      // Visual feedback
+      const originalText = copyBtn.textContent;
+      copyBtn.textContent = '✓';
+      copyBtn.style.background = 'rgba(0, 255, 0, 0.3)';
+      setTimeout(() => {
+        copyBtn.textContent = originalText;
+        copyBtn.style.background = 'rgba(255, 255, 255, 0.2)';
+      }, 1000);
+      console.log('✅ Text copied to clipboard (fallback method)');
+    }
+  };
+
+  // Close button
   const closeBtn = document.createElement('button');
   closeBtn.textContent = '×';
+  closeBtn.title = 'Close';
   closeBtn.style.cssText = `
     background: rgba(255, 255, 255, 0.2);
     border: 2px solid white;
@@ -157,10 +223,13 @@ function showResultModal(result) {
     color: #666;
     text-align: center;
   `;
-  footer.textContent = 'Click the × button to close • Powered by LangGraph + Claude';
+  footer.textContent = 'Click 📋 to copy • Click × to close • Powered by LangGraph + Claude';
 
+  buttonsContainer.appendChild(copyBtn);
+  buttonsContainer.appendChild(closeBtn);
+  
   header.appendChild(title);
-  header.appendChild(closeBtn);
+  header.appendChild(buttonsContainer);
   modal.appendChild(header);
   modal.appendChild(content);
   modal.appendChild(footer);
