@@ -234,18 +234,58 @@ def bob_ross_help():
         
         logger.info("🎉 LangGraph workflow completed successfully")
         
+        # Extract confidence data from the result
+        overall_confidence = result.get("overall_confidence", 0.5)
+        classification_confidence = result.get("classification_confidence", 0.5)
+        context_confidence = result.get("context_confidence", 0.5)
+        confidence_breakdown = result.get("confidence_breakdown", {})
+        confidence_reasons = result.get("confidence_reasons", [])
+        context_category = result.get("context_category", "unknown")
+
+        # Check if we need human input (interrupted workflow)
+        if result.get("status") == "human_input_required":
+            logger.info("🚨 Workflow interrupted - human input required")
+            return jsonify({
+                "status": "human_input_required",
+                "session_id": result.get("session_id"),
+                "original_text": selected_text,
+                "query_type": result.get("query_type"),
+                "classification_confidence": result.get("classification_confidence", 0.0),
+                "processing_steps": result.get("processing_steps", []),
+                "confidence_reasons": result.get("confidence_reasons", []),
+                "available_classifications": result.get("available_classifications", []),
+                "message": result.get("message", "Low confidence - human input needed"),
+                "processing_info": {
+                    "text_length": len(selected_text),
+                    "workflow": "interrupted for human input",
+                    "agent_type": "LangGraph Human-in-the-Loop Agent"
+                }
+            })
+        
+        # Normal completion path
+        logger.info(f"📊 Confidence scores - Overall: {overall_confidence:.2f}, Classification: {classification_confidence:.2f}, Context: {context_confidence:.2f}")
+
         return jsonify({
             "analysis": analysis,
             "original_text": selected_text,
-            "status": "success",
+            "status": result.get("status", "completed"),
             "query_type": query_type,
             "processing_steps": processing_steps,
             "source": "langgraph_agent",
+            "session_id": result.get("session_id"),
+            # Include all confidence data for Chrome extension
+            "overall_confidence": overall_confidence,
+            "classification_confidence": classification_confidence,
+            "context_confidence": context_confidence,
+            "context_category": context_category,
+            "confidence_breakdown": confidence_breakdown,
+            "confidence_reasons": confidence_reasons,
             "processing_info": {
                 "text_length": len(selected_text),
-                "response_length": len(analysis),
+                "response_length": len(analysis) if analysis else 0,
                 "workflow": "classify → retrieve → generate",
-                "agent_type": "LangGraph Multi-Step Agent"
+                "agent_type": "LangGraph Multi-Step Agent",
+                "confidence_threshold_met": overall_confidence >= 0.70
             }
         })
     
@@ -254,6 +294,74 @@ def bob_ross_help():
         return jsonify({
             "error": str(e),
             "message": "Oops! Even happy little accidents happen. Please try again.",
+            "status": "error"
+        }), 500
+
+@app.route('/BobRossHelp/continue', methods=['POST'])
+def bob_ross_continue():
+    """Continuation endpoint for human-in-the-loop processing"""
+    try:
+        logger.info("🔄 Received continuation request with human input")
+        
+        # Validate request
+        if not request.is_json:
+            return jsonify({"error": "Content-Type must be application/json"}), 400
+            
+        data = request.get_json()
+        session_id = data.get('session_id')
+        human_feedback = data.get('human_feedback', '').strip()
+        human_classification = data.get('human_classification', '').strip()
+        
+        if not session_id:
+            return jsonify({
+                "error": "Session ID required",
+                "message": "No session ID provided for continuation"
+            }), 400
+        
+        logger.info(f"📝 Continuing session {session_id}")
+        logger.info(f"👤 Human feedback: {human_feedback[:100]}..." if human_feedback else "👤 No human feedback provided")
+        logger.info(f"🏷️ Human classification: {human_classification}" if human_classification else "🏷️ No human classification provided")
+        
+        # Get agent and continue processing
+        agent = get_agent()
+        result = agent.continue_with_human_input(session_id, human_feedback, human_classification)
+        
+        # Check if continuation was successful
+        if result.get("status") == "error":
+            logger.error(f"❌ Continuation failed: {result.get('error')}")
+            return jsonify({
+                "error": result.get("error"),
+                "message": result.get("message", "Error processing continuation"),
+                "status": "error"
+            }), 500
+        
+        # Extract results for response
+        analysis = result.get("analysis", "")
+        logger.info(f"✅ Continuation successful ({len(analysis)} chars)")
+        
+        return jsonify({
+            "status": "completed",
+            "analysis": analysis,
+            "session_id": session_id,
+            "query_type": result.get("query_type"),
+            "classification_confidence": result.get("classification_confidence", 0.0),
+            "context_confidence": result.get("context_confidence", 0.0),
+            "overall_confidence": result.get("overall_confidence", 0.0),
+            "context_category": result.get("context_category", "unknown"),
+            "processing_steps": result.get("processing_steps", []),
+            "confidence_reasons": result.get("confidence_reasons", []),
+            "confidence_breakdown": result.get("confidence_breakdown", {}),
+            "processing_info": {
+                "workflow": "human-in-the-loop continuation",
+                "human_input_provided": bool(human_feedback or human_classification)
+            }
+        })
+        
+    except Exception as e:
+        logger.error(f"Error in continuation endpoint: {e}", exc_info=True)
+        return jsonify({
+            "error": str(e),
+            "message": "Sorry, there was an error continuing the analysis.",
             "status": "error"
         }), 500
 

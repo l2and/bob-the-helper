@@ -15,14 +15,16 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
     if (selectedText) {
       try {
         console.log('🚀 Starting LangChain query...');
-        const result = await queryLangChain(selectedText);
+        const responseData = await queryLangChain(selectedText);
         
-        console.log('✅ Got result from LangChain:', result.substring(0, 200) + '...');
+        console.log('✅ Got result from LangChain:', responseData);
         console.log('📤 Sending showResult message to tab:', tab.id);
         
         chrome.tabs.sendMessage(tab.id, {
           action: 'showResult',
-          result: result
+          result: responseData.analysis || responseData,
+          fullResponse: responseData,
+          originalText: selectedText
         }, (response) => {
           if (chrome.runtime.lastError) {
             console.error('❌ Error sending message to content script:', chrome.runtime.lastError);
@@ -34,7 +36,8 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
         console.error('❌ Error querying LangChain:', error);
         chrome.tabs.sendMessage(tab.id, {
           action: 'showResult',
-          result: `Sorry, there was an error processing your request: ${error.message}`
+          result: `Sorry, there was an error processing your request: ${error.message}`,
+          fullResponse: { error: error.message, overall_confidence: 0.0 }
         }, (response) => {
           if (chrome.runtime.lastError) {
             console.error('❌ Error sending error message to content script:', chrome.runtime.lastError);
@@ -85,31 +88,153 @@ async function queryLangChain(text) {
   
   const data = await response.json();
   console.log('Response data:', data);
+  console.log('Response data type:', typeof data);
+  console.log('Has analysis property:', 'analysis' in data);
+  console.log('Overall confidence:', data.overall_confidence);
   
   // Handle the new LangGraph response format
   if (data.analysis) {
-    // Add some metadata to the response
-    let result = data.analysis;
-    
-    // Add query type and processing info if available
-    if (data.query_type) {
-      result = `**Query Type:** ${data.query_type}\n\n${result}`;
-    }
-    
-    if (data.processing_steps && data.processing_steps.length > 0) {
-      result += '\n\n---\n**Processing Steps:**\n' + data.processing_steps.join('\n');
-    }
-    
-    return result;
+    console.log('✅ Returning full LangGraph response with confidence data');
+    return data;
+  }
+  
+  // Fallback for other response formats - but still preserve confidence if available
+  console.log('⚠️ Using fallback response format');
+  if (typeof data === 'string') {
+    return {
+      analysis: data,
+      overall_confidence: 0.4 // Default low confidence for string responses to trigger refinement UI
+    };
+  }
+  
+  // If data has some properties but not analysis, try to preserve confidence
+  const fallbackResult = data.response || data.result || data.output || data.message || 'No response received from Bob Ross Helper';
+  return {
+    analysis: fallbackResult,
+    overall_confidence: data.overall_confidence || data.confidence || 0.4, // Default low confidence
+    query_type: data.query_type || 'general_help',
+    // Preserve any other confidence-related data
+    classification_confidence: data.classification_confidence,
+    context_confidence: data.context_confidence
+  };
+}
+
+async function continueWithHumanInput(sessionId, humanFeedback, humanClassification) {
+  // Get the LangChain endpoint from storage
+  const result = await chrome.storage.sync.get(['langchainEndpoint']);
+  let endpoint = result.langchainEndpoint;
+  
+  // Default to local development endpoint if not configured
+  if (!endpoint) {
+    endpoint = 'http://127.0.0.1:8080/BobRossHelp';
+  }
+  
+  // Use the continuation endpoint
+  const continueEndpoint = endpoint + '/continue';
+  
+  console.log('🌐 Sending continuation request to:', continueEndpoint);
+  console.log('📦 Request payload:', { 
+    session_id: sessionId, 
+    human_feedback: humanFeedback, 
+    human_classification: humanClassification 
+  });
+  
+  // Send request to continuation endpoint
+  const response = await fetch(continueEndpoint, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      session_id: sessionId,
+      human_feedback: humanFeedback,
+      human_classification: humanClassification
+    }),
+    mode: 'cors'
+  });
+  
+  console.log('📡 Continuation response status:', response.status);
+  
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error('HTTP Error Response:', errorText);
+    throw new Error(`HTTP error! status: ${response.status}\nDetails: ${errorText}`);
+  }
+  
+  const data = await response.json();
+  console.log('Continuation response data:', data);
+  
+  // Handle the continuation response format
+  if (data.analysis) {
+    console.log('✅ Returning continuation response');
+    return data;
   }
   
   // Fallback for other response formats
-  return data.response || data.result || data.output || data.message || 'No response received from Bob Ross Helper';
+  return data.response || data.result || data.output || data.message || 'No response received from continuation';
 }
 
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+chrome.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
   if (message.action === 'textSelected') {
     // Store the selected text for potential use
     chrome.storage.local.set({ lastSelectedText: message.text });
+  } else if (message.action === 'rerunWithContext') {
+    try {
+      console.log('🔄 Rerunning with additional context...');
+      const enhancedText = `${message.originalText}\n\nAdditional context: ${message.additionalContext}`;
+      const responseData = await queryLangChain(enhancedText);
+      
+      chrome.tabs.sendMessage(sender.tab.id, {
+        action: 'showResult',
+        result: responseData.analysis || responseData,
+        fullResponse: responseData,
+        originalText: message.originalText,
+        isRerun: true
+      });
+      
+      sendResponse({ success: true });
+    } catch (error) {
+      console.error('❌ Error in rerun:', error);
+      chrome.tabs.sendMessage(sender.tab.id, {
+        action: 'showResult',
+        result: `Sorry, there was an error processing your request: ${error.message}`,
+        fullResponse: { error: error.message, overall_confidence: 0.0 },
+        isRerun: true
+      });
+      sendResponse({ success: false, error: error.message });
+    }
+  } else if (message.action === 'continueWithHumanInput') {
+    try {
+      console.log('🤚 Continuing with human input...');
+      console.log('Session ID:', message.sessionId);
+      console.log('Human feedback:', message.humanFeedback);
+      console.log('Human classification:', message.humanClassification);
+      
+      const responseData = await continueWithHumanInput(
+        message.sessionId,
+        message.humanFeedback,
+        message.humanClassification
+      );
+      
+      chrome.tabs.sendMessage(sender.tab.id, {
+        action: 'showResult',
+        result: responseData.analysis || responseData,
+        fullResponse: responseData,
+        originalText: responseData.original_text || 'Unknown',
+        isRerun: true
+      });
+      
+      sendResponse({ success: true });
+    } catch (error) {
+      console.error('❌ Error in human input continuation:', error);
+      chrome.tabs.sendMessage(sender.tab.id, {
+        action: 'showResult',
+        result: `Sorry, there was an error processing your input: ${error.message}`,
+        fullResponse: { error: error.message, overall_confidence: 0.0 },
+        isRerun: true
+      });
+      sendResponse({ success: false, error: error.message });
+    }
   }
+  return true; // Keep message channel open for async response
 });
