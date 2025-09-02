@@ -28,9 +28,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     console.log('📤 Sending selected text:', selectedText);
     sendResponse({ text: selectedText });
   } else if (message.action === 'showResult') {
-    console.log('🎨 Showing result modal with:', message.result.substring(0, 100) + '...');
+    console.log('🎨 Showing result modal with:', message.result);
     try {
-      showResultModal(message.result);
+      showResultModal(message.result, message.fullResponse, message.originalText, message.isRerun);
       console.log('✅ Modal shown successfully');
       sendResponse({ success: true });
     } catch (error) {
@@ -42,8 +42,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return true; // Keep message channel open for async response
 });
 
-function showResultModal(result) {
-  console.log('🎭 showResultModal called with result length:', result.length);
+function showResultModal(result, fullResponse = null, originalText = '', isRerun = false) {
+  console.log('🎭 showResultModal called with result:', result);
+  console.log('📊 Full response data:', fullResponse);
   
   // Clean up any existing modal
   const existingModal = document.getElementById('bob-ross-modal');
@@ -202,8 +203,35 @@ function showResultModal(result) {
     modal.remove();
   };
 
+  // Check if this is a human-in-the-loop response that needs user input
+  console.log('📊 Full response object:', fullResponse);
+  console.log('📊 Full response type:', typeof fullResponse);
+  
+  const isHumanInputRequired = fullResponse?.status === 'human_input_required';
+  const sessionId = fullResponse?.session_id;
+  const availableClassifications = fullResponse?.available_classifications || [];
+  
+  let confidence = 1.0; // Default high confidence
+  
+  if (fullResponse && typeof fullResponse === 'object') {
+    // Try different confidence properties
+    confidence = fullResponse.overall_confidence || 
+                fullResponse.context_confidence || 
+                fullResponse.classification_confidence ||
+                fullResponse.confidence || 
+                1.0;
+  }
+  
+  // If no fullResponse or it's a string, assume low confidence to show refinement UI
+  if (!fullResponse || typeof fullResponse === 'string') {
+    confidence = 0.4;
+  }
+  
+  const showRefinementUI = (confidence < 0.70 && !isRerun) || isHumanInputRequired;
+
+  console.log(`📊 Confidence level: ${confidence}, Show refinement UI: ${showRefinementUI}, Human input required: ${isHumanInputRequired}`);
+
   const content = document.createElement('div');
-  content.innerHTML = result.replace(/\n/g, '<br>');
   content.style.cssText = `
     padding: 25px;
     line-height: 1.6; 
@@ -212,6 +240,233 @@ function showResultModal(result) {
     flex: 1;
     font-size: 15px;
   `;
+
+  // Add confidence indicator if available
+  if (fullResponse && fullResponse.overall_confidence !== undefined) {
+    const confidenceIndicator = document.createElement('div');
+    const confidencePercent = Math.round(confidence * 100);
+    const confidenceColor = confidence >= 0.8 ? '#28a745' : confidence >= 0.5 ? '#ffc107' : '#dc3545';
+    
+    confidenceIndicator.style.cssText = `
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 15px;
+      padding: 10px;
+      background: #f8f9fa;
+      border-radius: 6px;
+      border-left: 4px solid ${confidenceColor};
+    `;
+    
+    confidenceIndicator.innerHTML = `
+      <div style="font-weight: bold; color: ${confidenceColor};">
+        📊 Confidence: ${confidencePercent}%
+      </div>
+      <div style="font-size: 12px; color: #666;">
+        ${confidence >= 0.8 ? 'High confidence response' : 
+          confidence >= 0.5 ? 'Moderate confidence - may benefit from more context' : 
+          'Low confidence - additional context recommended'}
+      </div>
+    `;
+    
+    content.appendChild(confidenceIndicator);
+  }
+
+  // Add main response content
+  const responseContent = document.createElement('div');
+  
+  if (isHumanInputRequired) {
+    // Show the message asking for human input instead of analysis
+    const message = fullResponse?.message || "I need more context to help you better.";
+    responseContent.innerHTML = `
+      <div style="background: #e3f2fd; padding: 15px; border-radius: 6px; border-left: 4px solid #2196f3; margin-bottom: 15px;">
+        <div style="font-weight: bold; color: #1976d2; margin-bottom: 8px;">🤚 I need your help!</div>
+        <div style="color: #1565c0;">${message}</div>
+      </div>
+    `;
+  } else {
+    // Show normal analysis response
+    responseContent.innerHTML = (typeof result === 'string' ? result : fullResponse?.analysis || 'No response available').replace(/\n/g, '<br>');
+  }
+  
+  content.appendChild(responseContent);
+
+  // Add context refinement UI for low confidence responses
+  if (showRefinementUI) {
+    const refinementSection = document.createElement('div');
+    refinementSection.style.cssText = `
+      margin-top: 20px;
+      padding: 15px;
+      background: #fff3cd;
+      border: 1px solid #ffeaa7;
+      border-radius: 6px;
+    `;
+
+    const refinementTitle = document.createElement('h4');
+    refinementTitle.textContent = '🎯 Need more specific help?';
+    refinementTitle.style.cssText = 'margin: 0 0 10px 0; color: #856404;';
+
+    const refinementDescription = document.createElement('p');
+    refinementDescription.innerHTML = 'I\'m not entirely confident about this response. You can help me provide a better answer by:<br><strong>Click a button below to continue immediately, or provide your own context:</strong>';
+    refinementDescription.style.cssText = 'margin: 0 0 15px 0; font-size: 13px; color: #856404; line-height: 1.4;';
+
+    // Context buttons - use server-provided classifications if available
+    const buttonContainer = document.createElement('div');
+    buttonContainer.style.cssText = 'display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 15px;';
+
+    const contextButtons = availableClassifications.length > 0 ? 
+      availableClassifications.map(cls => ({
+        text: cls.label,
+        context: cls.description,
+        value: cls.value
+      })) :
+      [
+        { text: '🐛 This is an error', context: 'I am seeing an error or exception message', value: 'error_help' },
+        { text: '📖 Explain concept', context: 'I want to understand what this concept or term means', value: 'concept_learning' },
+        { text: '⚙️ Show usage', context: 'I want to know how to use this API or function', value: 'api_usage' },
+        { text: '🔍 Code review', context: 'I want to understand what this code does', value: 'code_explanation' },
+        { text: '🚀 Implementation help', context: 'I want help implementing or building something', value: 'implementation_help' }
+      ];
+
+    contextButtons.forEach(button => {
+      const btn = document.createElement('button');
+      btn.textContent = button.text;
+      btn.style.cssText = `
+        background: #fff;
+        border: 1px solid #ffc107;
+        border-radius: 4px;
+        padding: 6px 10px;
+        font-size: 12px;
+        cursor: pointer;
+        transition: all 0.2s;
+      `;
+      btn.onmouseover = () => btn.style.background = '#ffc107';
+      btn.onmouseout = () => btn.style.background = '#fff';
+      btn.onclick = async () => {
+        // Disable all buttons to prevent double-clicks
+        const allButtons = refinementSection.querySelectorAll('button');
+        allButtons.forEach(b => b.disabled = true);
+        
+        // Show loading state on clicked button
+        const originalText = btn.textContent;
+        btn.textContent = '🔄 Processing...';
+        btn.style.background = '#ffc107';
+        
+        try {
+          if (isHumanInputRequired && sessionId) {
+            // Use continuation endpoint for human-in-the-loop with just classification
+            await chrome.runtime.sendMessage({
+              action: 'continueWithHumanInput',
+              sessionId: sessionId,
+              humanFeedback: button.context, // Use the button's description as context
+              humanClassification: button.value
+            });
+          } else {
+            // Fallback to old rerun method
+            await chrome.runtime.sendMessage({
+              action: 'rerunWithContext',
+              originalText: originalText,
+              additionalContext: button.context
+            });
+          }
+        } catch (error) {
+          console.error('Failed to continue analysis:', error);
+          alert('Failed to continue analysis. Please try again.');
+          // Reset button state on error
+          btn.textContent = originalText;
+          btn.style.background = '#fff';
+          allButtons.forEach(b => b.disabled = false);
+        }
+      };
+      buttonContainer.appendChild(btn);
+    });
+
+    // Custom text input
+    const textAreaLabel = document.createElement('label');
+    textAreaLabel.textContent = 'Or provide your own context:';
+    textAreaLabel.style.cssText = 'display: block; margin-bottom: 8px; font-weight: bold; font-size: 13px; color: #856404;';
+
+    const textArea = document.createElement('textarea');
+    textArea.placeholder = 'Add more context about what you\'re trying to do or understand...';
+    textArea.style.cssText = `
+      width: 100%;
+      height: 60px;
+      padding: 8px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      font-size: 13px;
+      resize: vertical;
+      box-sizing: border-box;
+      font-family: Arial, sans-serif;
+      background-color: white;
+      color: black;
+    `;
+
+    // Rerun button
+    const rerunButton = document.createElement('button');
+    rerunButton.textContent = '🔄 Get Better Answer';
+    rerunButton.style.cssText = `
+      background: #28a745;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      padding: 10px 20px;
+      font-size: 13px;
+      cursor: pointer;
+      margin-top: 10px;
+      transition: background 0.2s;
+    `;
+    rerunButton.onmouseover = () => rerunButton.style.background = '#218838';
+    rerunButton.onmouseout = () => rerunButton.style.background = '#28a745';
+    
+    rerunButton.onclick = async () => {
+      const additionalContext = textArea.value.trim();
+      const selectedClassification = textArea.dataset.selectedClassification || '';
+      
+      if (!additionalContext && !selectedClassification) {
+        alert('Please provide some additional context or select a classification first!');
+        textArea.focus();
+        return;
+      }
+
+      // Show loading state
+      rerunButton.disabled = true;
+      rerunButton.textContent = '🔄 Processing...';
+      
+      try {
+        if (isHumanInputRequired && sessionId) {
+          // Use continuation endpoint for human-in-the-loop
+          await chrome.runtime.sendMessage({
+            action: 'continueWithHumanInput',
+            sessionId: sessionId,
+            humanFeedback: additionalContext,
+            humanClassification: selectedClassification
+          });
+        } else {
+          // Fallback to old rerun method
+          await chrome.runtime.sendMessage({
+            action: 'rerunWithContext',
+            originalText: originalText,
+            additionalContext: additionalContext
+          });
+        }
+      } catch (error) {
+        console.error('Failed to continue analysis:', error);
+        alert('Failed to continue analysis. Please try again.');
+        rerunButton.disabled = false;
+        rerunButton.textContent = '🔄 Get Better Answer';
+      }
+    };
+
+    refinementSection.appendChild(refinementTitle);
+    refinementSection.appendChild(refinementDescription);
+    refinementSection.appendChild(buttonContainer);
+    refinementSection.appendChild(textAreaLabel);
+    refinementSection.appendChild(textArea);
+    refinementSection.appendChild(rerunButton);
+    
+    content.appendChild(refinementSection);
+  }
 
   // Add footer with helpful info
   const footer = document.createElement('div');
@@ -223,7 +478,9 @@ function showResultModal(result) {
     color: #666;
     text-align: center;
   `;
-  footer.textContent = 'Click 📋 to copy • Click × to close • Powered by LangGraph + Claude';
+  footer.textContent = isRerun ? 
+    'Rerun complete • Click 📋 to copy • Click × to close • Powered by LangGraph + Claude' :
+    'Click 📋 to copy • Click × to close • Powered by LangGraph + Claude';
 
   buttonsContainer.appendChild(copyBtn);
   buttonsContainer.appendChild(closeBtn);
