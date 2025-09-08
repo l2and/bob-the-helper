@@ -1,22 +1,21 @@
 import os
+import sys
 import json
 import glob
 from datetime import datetime
 from typing import Dict, List, Any, Optional
+
 from langsmith import Client, traceable
 from langsmith.evaluation import evaluate
-from langsmith.schemas import Dataset, Example
-from langchain_anthropic import ChatAnthropic
-import sys
-import os
-# Add happyLittleTreesOfKnowledge directory to path to import langgraph_agent
+
+# Add happyLittleTreesOfKnowledge directory to path to import langgraph_agent and logger_config
 sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'happyLittleTreesOfKnowledge'))
 from langgraph_agent import get_agent  # Your enhanced agent
-from evaluators import confidence_calibration, query_classification
-import logging
+from logger_config import setup_logger
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+from evaluators import confidence_calibration, query_classification
+
+logger = setup_logger(__name__)
 
 class SimplifiedBobRossEvaluator:
     """Enhanced evaluation with confidence-based metrics"""
@@ -24,10 +23,6 @@ class SimplifiedBobRossEvaluator:
     def __init__(self):
         self.client = Client(api_key=os.getenv("LANGSMITH_API_KEY"))
         self.agent = get_agent()  # Your enhanced agent
-        self.llm = ChatAnthropic(
-            anthropic_api_key=os.getenv("ANTHROPIC_API_KEY"),
-            model_name="claude-sonnet-4-20250514"
-        )
     
     def load_test_cases_from_csv(self, csv_file_path: str, dataset_name: str):
         """Load test cases from CSV file using LangSmith upload_csv method"""

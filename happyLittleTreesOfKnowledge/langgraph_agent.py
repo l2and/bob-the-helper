@@ -1,16 +1,19 @@
 import os
-from dotenv import load_dotenv
-dotenv_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env')
-load_dotenv(dotenv_path)
+import json
 from typing import TypedDict, Literal, List, Optional, Dict
+
+from dotenv import load_dotenv
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage
 from langgraph.graph import StateGraph, END
-from langgraph.prebuilt import tools_condition
 from langgraph.checkpoint.memory import MemorySaver
 from langsmith import Client
+
+# Load environment variables
+dotenv_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env')
+load_dotenv(dotenv_path)
+
 from logger_config import setup_logger
-import json
 
 logger = setup_logger(__name__)
 # Temporarily enable debug logging to see Claude responses
@@ -36,10 +39,14 @@ class DocumentationAssistantState(TypedDict):
     session_id: Optional[str]  # For tracking interrupted sessions
 
 class ConfidenceBasedBobRossAgent:
+    # =============================================================================
+    # INITIALIZATION
+    # =============================================================================
+    
     def __init__(self):
         self.llm = ChatAnthropic(
-            anthropic_api_key=os.getenv("ANTHROPIC_API_KEY"),
-            model_name="claude-sonnet-4-20250514",
+            api_key=os.getenv("ANTHROPIC_API_KEY"),
+            model="claude-sonnet-4-20250514",
             temperature=0.1,  # Lower for classification, higher for generation
             max_tokens=1000,
             timeout=None,
@@ -54,8 +61,8 @@ class ConfidenceBasedBobRossAgent:
         
         # Separate LLM for generation with higher creativity
         self.creative_llm = ChatAnthropic(
-            anthropic_api_key=os.getenv("ANTHROPIC_API_KEY"),
-            model_name="claude-sonnet-4-20250514",
+            api_key=os.getenv("ANTHROPIC_API_KEY"),
+            model="claude-sonnet-4-20250514",
             temperature=0.7,  # Higher for Bob Ross creativity
             max_tokens=1500,
             timeout=None,
@@ -138,6 +145,219 @@ class ConfidenceBasedBobRossAgent:
         }
         
         self.graph = self.create_langgraph_workflow()
+    
+    # =============================================================================
+    # MAIN ENTRY POINT
+    # =============================================================================
+    
+    def process_highlighted_text(self, text: str, session_id: str = None) -> dict:
+        """Enhanced main entry point with human-in-the-loop support"""
+        try:
+            import uuid
+            if not session_id:
+                session_id = str(uuid.uuid4())
+                
+            logger.info(f"Processing text with session {session_id}: {text[:100]}...")
+            
+            # Enhanced initial state with human-in-the-loop fields
+            initial_state = DocumentationAssistantState(
+                original_text=text,
+                query_type=None,
+                classification_confidence=0.0,
+                context_category=None,
+                context_confidence=0.0,
+                context_info="",
+                bob_ross_response="",
+                overall_confidence=0.0,
+                processing_steps=["🌟 Starting confidence-based analysis..."],
+                confidence_reasons=[],
+                # Human-in-the-loop initialization
+                needs_human_input=False,
+                human_feedback=None,
+                human_classification=None,
+                available_classifications=[],
+                session_id=session_id
+            )
+            
+            # Run the enhanced graph with thread/session support
+            config = {"configurable": {"thread_id": session_id}}
+            final_state = self.graph.invoke(initial_state, config)
+            
+            # Debug logging
+            logger.info(f"🔍 Final state keys: {list(final_state.keys())}")
+            logger.info(f"🔍 needs_human_input in final_state: {final_state.get('needs_human_input')}")
+            logger.info(f"🔍 bob_ross_response empty: {not final_state.get('bob_ross_response')}")
+            
+            # Check if we were interrupted for human input
+            # Method 1: Check if needs_human_input flag is set
+            # Method 2: Check if workflow didn't complete (no bob_ross_response)
+            workflow_interrupted = (
+                final_state.get("needs_human_input", False) or 
+                not final_state.get("bob_ross_response", "").strip()
+            )
+            
+            if workflow_interrupted and final_state.get("needs_human_input", False):
+                logger.info("🚨 Workflow interrupted - human input required")
+                interrupt_response = {
+                    "status": "human_input_required",
+                    "session_id": session_id,
+                    "original_text": text,
+                    "query_type": final_state.get("query_type"),
+                    "classification_confidence": final_state.get("classification_confidence", 0.0),
+                    "processing_steps": final_state.get("processing_steps", []),
+                    "confidence_reasons": final_state.get("confidence_reasons", []),
+                    "available_classifications": final_state.get("available_classifications", []),
+                    "message": f"I'm only {final_state.get('classification_confidence', 0.0):.0%} confident about how to help with '{text}'. Could you provide more context?"
+                }
+                logger.info(f"🔍 About to return interrupt response: {interrupt_response}")
+                return interrupt_response
+            
+            # Normal completion
+            return {
+                "status": "completed",
+                "analysis": final_state["bob_ross_response"],
+                "original_text": text,
+                "session_id": session_id,
+                "query_type": final_state["query_type"],
+                "classification_confidence": final_state.get("classification_confidence", 0.0),
+                "context_confidence": final_state.get("context_confidence", 0.0),
+                "overall_confidence": final_state.get("overall_confidence", 0.0),
+                "context_category": final_state.get("context_category", "unknown"),
+                "processing_steps": final_state.get("processing_steps", []),
+                "confidence_reasons": final_state.get("confidence_reasons", []),
+                "confidence_breakdown": {
+                    "classification": final_state.get("classification_confidence", 0.0),
+                    "context_retrieval": final_state.get("context_confidence", 0.0),
+                    "overall": final_state.get("overall_confidence", 0.0)
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in enhanced processing: {e}")
+            return {
+                "status": "error",
+                "analysis": "Well friend, I encountered a happy little accident. But that's okay - we learn from these moments! Please try again. 🎨",
+                "original_text": text,
+                "error": str(e),
+                "overall_confidence": 0.1,
+                "confidence_reasons": [f"Processing failed: {str(e)}"]
+            }
+    
+    def continue_with_human_input(self, session_id: str, human_feedback: str = None, human_classification: str = None) -> dict:
+        """Continue processing after human input"""
+        try:
+            logger.info(f"Continuing session {session_id} with human input")
+            logger.info(f"Human feedback: {human_feedback}")
+            logger.info(f"Human classification: {human_classification}")
+            
+            config = {"configurable": {"thread_id": session_id}}
+            
+            # Get the current state and inspect it
+            state_snapshot = self.graph.get_state(config)
+            logger.info(f"🔍 Current state snapshot: {state_snapshot}")
+            current_state = state_snapshot.values
+            logger.info(f"🔍 Current state keys: {list(current_state.keys())}")
+            logger.info(f"🔍 Current state needs_human_input: {current_state.get('needs_human_input')}")
+            
+            # Update the state with human input
+            updated_state = {
+                **current_state,
+                "human_feedback": human_feedback,
+                "human_classification": human_classification,
+                "needs_human_input": False  # Allow processing to continue
+            }
+            logger.info(f"🔍 Updated state with human input, needs_human_input set to False")
+            logger.info(f"🔍 About to update state with human_classification: {human_classification}")
+            
+            # Update the checkpoint state first
+            self.graph.update_state(config, updated_state)
+            logger.info("🔍 State updated in checkpoint")
+            
+            # Use stream to continue from checkpoint
+            logger.info("🔍 Using stream to continue from updated checkpoint...")
+            events = []
+            for event in self.graph.stream(None, config):
+                logger.info(f"🔍 Stream event: {event}")
+                events.append(event)
+                
+            # Get the final state after streaming
+            final_state = self.graph.get_state(config).values
+            logger.info(f"🔍 Final state after streaming: {list(final_state.keys())}")
+            
+            return {
+                "status": "completed",
+                "analysis": final_state["bob_ross_response"],
+                "original_text": current_state["original_text"],
+                "session_id": session_id,
+                "query_type": final_state["query_type"],
+                "classification_confidence": final_state.get("classification_confidence", 0.0),
+                "context_confidence": final_state.get("context_confidence", 0.0),
+                "overall_confidence": final_state.get("overall_confidence", 0.0),
+                "context_category": final_state.get("context_category", "unknown"),
+                "processing_steps": final_state.get("processing_steps", []),
+                "confidence_reasons": final_state.get("confidence_reasons", []),
+                "confidence_breakdown": {
+                    "classification": final_state.get("classification_confidence", 0.0),
+                    "context_retrieval": final_state.get("context_confidence", 0.0),
+                    "overall": final_state.get("overall_confidence", 0.0)
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"Error continuing with human input: {e}")
+            return {
+                "status": "error",
+                "error": str(e),
+                "message": "Sorry, there was an error processing your additional context."
+            }
+    
+    # =============================================================================
+    # WORKFLOW GRAPH CREATION
+    # =============================================================================
+    
+    def create_langgraph_workflow(self) -> StateGraph:
+        """Create enhanced LangGraph workflow with human-in-the-loop support"""
+        workflow = StateGraph(DocumentationAssistantState)
+        
+        # Add enhanced nodes
+        workflow.add_node("classify", self.classify_query_with_confidence)
+        workflow.add_node("human_input", self.handle_human_input)  # Human-in-the-loop node
+        workflow.add_node("retrieve", self.retrieve_context_with_confidence)
+        workflow.add_node("generate", self.generate_confident_response)
+        
+        # Set entry point
+        workflow.set_entry_point("classify")
+        
+        # Add conditional routing after classification
+        workflow.add_conditional_edges(
+            "classify",
+            self.should_continue_or_interrupt,
+            {
+                "continue": "retrieve",    # High confidence -> continue to retrieve
+                "human_input": "human_input"  # Low confidence -> go to human_input node for interruption
+            }
+        )
+        
+        # After human input processing, continue to retrieve
+        workflow.add_edge("human_input", "retrieve")
+        workflow.add_edge("retrieve", "generate")
+        workflow.add_edge("generate", END)
+        
+        # Compile with memory for checkpointing
+        return workflow.compile(checkpointer=self.memory, interrupt_before=["human_input"])
+    
+    def should_continue_or_interrupt(self, state: DocumentationAssistantState) -> Literal["continue", "human_input"]:
+        """Determine if workflow should continue or wait for human input"""
+        if state.get("needs_human_input", False):
+            logger.info("🚦 Routing to human input node - confidence below threshold")
+            return "human_input"
+        else:
+            logger.info("🚦 Routing to continue processing - confidence above threshold")
+            return "continue"
+    
+    # =============================================================================
+    # STEP 1: QUERY CLASSIFICATION
+    # =============================================================================
     
     def classify_query_with_confidence(self, state: DocumentationAssistantState) -> DocumentationAssistantState:
         """Enhanced classification with detailed confidence scoring"""
@@ -314,6 +534,10 @@ class ConfidenceBasedBobRossAgent:
         
         return best_match
     
+    # =============================================================================
+    # STEP 2: HUMAN-IN-THE-LOOP PROCESSING
+    # =============================================================================
+    
     def handle_human_input(self, state: DocumentationAssistantState) -> DocumentationAssistantState:
         """Process human input and continue with refined classification"""
         try:
@@ -365,6 +589,10 @@ class ConfidenceBasedBobRossAgent:
                 "needs_human_input": False,
                 "processing_steps": state.get("processing_steps", []) + ["Error processing human input, continuing..."]
             }
+    
+    # =============================================================================
+    # STEP 3: CONTEXT RETRIEVAL
+    # =============================================================================
     
     def retrieve_context_with_confidence(self, state: DocumentationAssistantState) -> DocumentationAssistantState:
         """Enhanced context retrieval with confidence scoring"""
@@ -443,6 +671,10 @@ class ConfidenceBasedBobRossAgent:
             return "troubleshooting_specific"
         else:
             return "general_langchain"
+    
+    # =============================================================================
+    # STEP 4: RESPONSE GENERATION
+    # =============================================================================
     
     def generate_confident_response(self, state: DocumentationAssistantState) -> DocumentationAssistantState:
         """Generate response with overall confidence calculation"""
@@ -550,6 +782,10 @@ class ConfidenceBasedBobRossAgent:
         
         response = self.creative_llm.invoke([HumanMessage(content=fallback_prompt)])
         return response.content
+    
+    # =============================================================================
+    # UTILITY METHODS
+    # =============================================================================
     
     def should_continue_or_interrupt(self, state: DocumentationAssistantState) -> Literal["continue", "human_input"]:
         """Determine if workflow should continue or wait for human input"""
