@@ -208,8 +208,10 @@ function showResultModal(result, fullResponse = null, originalText = '', isRerun
   console.log('📊 Full response type:', typeof fullResponse);
   
   const isHumanInputRequired = fullResponse?.status === 'human_input_required';
-  const sessionId = fullResponse?.session_id;
+  const sessionId = fullResponse?.session_id || fullResponse?.sessionId;
   const availableClassifications = fullResponse?.available_classifications || [];
+  
+  console.log(`🔍 Debug info: isHumanInputRequired=${isHumanInputRequired}, sessionId=${sessionId}, status=${fullResponse?.status}`);
   
   let confidence = 1.0; // Default high confidence
   
@@ -355,6 +357,7 @@ function showResultModal(result, fullResponse = null, originalText = '', isRerun
         try {
           if (isHumanInputRequired && sessionId) {
             // Use continuation endpoint for human-in-the-loop with just classification
+            console.log(`🚀 Using continueWithHumanInput for session ${sessionId}`);
             await chrome.runtime.sendMessage({
               action: 'continueWithHumanInput',
               sessionId: sessionId,
@@ -363,12 +366,20 @@ function showResultModal(result, fullResponse = null, originalText = '', isRerun
             });
           } else {
             // Fallback to old rerun method
+            console.log('🚀 Using rerunWithContext (no session ID or not human input required)');
             await chrome.runtime.sendMessage({
               action: 'rerunWithContext',
               originalText: originalText,
               additionalContext: button.context
             });
           }
+          
+          // Close the current modal immediately after sending the request
+          // The new response will create a fresh modal
+          console.log('🚀 Request sent successfully, closing current modal to wait for new response');
+          overlay.remove();
+          modal.remove();
+          
         } catch (error) {
           console.error('Failed to continue analysis:', error);
           alert('Failed to continue analysis. Please try again.');
@@ -436,6 +447,7 @@ function showResultModal(result, fullResponse = null, originalText = '', isRerun
       try {
         if (isHumanInputRequired && sessionId) {
           // Use continuation endpoint for human-in-the-loop
+          console.log(`🚀 Using continueWithHumanInput for session ${sessionId} with custom text`);
           await chrome.runtime.sendMessage({
             action: 'continueWithHumanInput',
             sessionId: sessionId,
@@ -444,12 +456,20 @@ function showResultModal(result, fullResponse = null, originalText = '', isRerun
           });
         } else {
           // Fallback to old rerun method
+          console.log('🚀 Using rerunWithContext with custom text (no session ID or not human input required)');
           await chrome.runtime.sendMessage({
             action: 'rerunWithContext',
             originalText: originalText,
             additionalContext: additionalContext
           });
         }
+        
+        // Close the current modal immediately after sending the request
+        // The new response will create a fresh modal
+        console.log('🚀 Custom context request sent successfully, closing current modal to wait for new response');
+        overlay.remove();
+        modal.remove();
+        
       } catch (error) {
         console.error('Failed to continue analysis:', error);
         alert('Failed to continue analysis. Please try again.');

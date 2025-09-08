@@ -40,19 +40,22 @@ document.addEventListener('DOMContentLoaded', async () => {
         showStatus('Testing connection...', 'success');
         
         try {
-            const response = await fetch(endpoint, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    text: 'test connection'
-                })
+            // Use the simple /test endpoint instead of triggering full workflow
+            let testEndpoint = endpoint;
+            if (endpoint.endsWith('/BobRossHelp')) {
+                testEndpoint = endpoint.replace('/BobRossHelp', '/test');
+            } else if (!endpoint.endsWith('/test')) {
+                testEndpoint = endpoint.replace(/\/$/, '') + '/test';
+            }
+
+            const response = await fetch(testEndpoint, {
+                method: 'GET'
             });
 
             if (response.ok) {
                 const data = await response.json();
-                showStatus('✅ Connection successful! Response received.', 'success');
+                showStatus(`✅ ${data.message || 'Connection successful!'}`, 'success');
+                console.log('Test response:', data);
             } else {
                 showStatus(`❌ Connection failed: HTTP ${response.status}`, 'error');
             }

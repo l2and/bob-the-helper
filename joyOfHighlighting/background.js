@@ -93,7 +93,7 @@ async function queryLangChain(text) {
   console.log('Overall confidence:', data.overall_confidence);
   
   // Handle the new LangGraph response format
-  if (data.analysis) {
+  if (data.analysis || data.status === 'human_input_required') {
     console.log('✅ Returning full LangGraph response with confidence data');
     return data;
   }
