@@ -1,0 +1,40 @@
+input,expected_query_type,expected_confidence,confidence_rationale,category,severity,difficulty
+"Something weird is happening in our LangSmith dashboard. We had a runaway agent that was stuck in an authentication loop earlier today - it kept failing to authenticate and eventually locked out the user. I stopped the agent about 3 hours ago, but I'm still seeing new traces appearing in the LangSmith UI. How is this possible if no agents are running? Is there some kind of background process or delayed trace reporting that could cause this?",general_help,medium,"Describes an unusual behavior but lacks technical specifics about the architecture",debugging,low,medium
+"We need to integrate some custom evaluation logic into LangSmith but I can't find clear documentation on this. We have internal REST APIs that we want to call during evaluations to validate certain fields, but it doesn't look like the requests library is available in the LangSmith evaluation environment. Is there a way to make external API calls during evaluations? Would webhooks be a better approach for this use case?",api_usage,medium,"Specific technical question about capabilities but shows some uncertainty about available options",api_usage,medium,medium
+"We set up VPC peering between our application VPC and your service VPC following your documentation. The peering connection shows as 'Active' in the AWS console, but our application keeps timing out when trying to connect to your service endpoint at 10.10.1.5. Our security group allows all outbound traffic and according to your docs, your service should accept traffic from our VPC CIDR block (192.168.0.0/16). The connection just times out - no errors, just timeouts. What are we missing?",error_help,high,"Clear networking connectivity issue with specific symptoms (timeouts) and configuration details",configuration,high,hard
+"We're experiencing performance issues with your multi-tenant API service. Our enterprise customer account (customer-abc) has been getting a lot of 429 Too Many Requests errors and high latency over the past hour. This is unusual for us since we typically don't hit rate limits. Is there some kind of 'noisy neighbor' situation happening where other customers are affecting our performance? Here are some logs and pod details:
+
+```yaml
+kubectl describe pod api-worker-xyz-123:
+
+Name:         api-worker-xyz-123
+Namespace:    prod
+Status:       Running
+Node:         gke-prod-node-pool-1-a4b3c2d1
+Annotations:  customer-id: customer-def
+
+Resources:
+  Limits:
+    cpu:     500m
+    memory:  512Mi
+  Requests:
+    cpu:     250m
+    memory:  256Mi
+...
+Events:
+  Type     Reason     Age   From     Message
+  ----     ------     ----  ----     -------
+  Warning  Throttled  5m    kubelet  CPU usage exceeds the limit
+  Warning  Throttled  2m    kubelet  CPU usage exceeds the limit
+```
+
+```
+kubectl logs api-worker-xyz-123:
+
+[2025-06-11T19:20:10Z] INFO: Request received for customer: customer-def, endpoint: /api/v1/process
+[2025-06-11T19:20:11Z] INFO: Request received for customer: customer-def, endpoint: /api/v1/process
+[2025-06-11T19:20:12Z] WARN: Throttling request for customer-abc, rate limit exceeded.
+[2025-06-11T19:20:13Z] INFO: Request received for customer: customer-def, endpoint: /api/v1/process
+```
+
+We need to understand if this is a rate limiting issue on our end or something systemic with the shared infrastructure. Why is customer-def getting processed while customer-abc is being throttled?",general_help,medium,"Performance issue description with logs provided, but still needs analysis to determine root cause",performance,high,hard
