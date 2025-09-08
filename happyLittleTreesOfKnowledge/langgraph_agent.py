@@ -174,7 +174,7 @@ class ConfidenceBasedBobRossAgent:
             {{
                 "category": "category_name",
                 "confidence": 0.85,
-                "reasoning": "Detailed explanation of classification decision",
+                "reasoning": "Brief explanation of classification decision",
                 "confidence_factors": [
                     "Factor 1 that increases/decreases confidence",
                     "Factor 2 that increases/decreases confidence"
@@ -317,6 +317,12 @@ class ConfidenceBasedBobRossAgent:
     def handle_human_input(self, state: DocumentationAssistantState) -> DocumentationAssistantState:
         """Process human input and continue with refined classification"""
         try:
+            logger.info("🤚 ===== ENTERED handle_human_input node =====")
+            logger.info(f"🤚 State keys: {list(state.keys())}")
+            logger.info(f"🤚 human_classification in state: {state.get('human_classification')}")
+            logger.info(f"🤚 human_feedback in state: {state.get('human_feedback')}")
+            logger.info(f"🤚 Original query_type: {state.get('query_type')}")
+            
             steps = state.get("processing_steps", [])
             confidence_reasons = state.get("confidence_reasons", [])
             
@@ -326,7 +332,7 @@ class ConfidenceBasedBobRossAgent:
                 classification_confidence = 0.9  # High confidence since human selected
                 steps.append(f"✅ Human selected classification: {query_type}")
                 confidence_reasons.append("Human provided explicit classification")
-                logger.info(f"🤚 Human selected classification: {query_type}")
+                logger.info(f"🤚 ✅ OVERRIDING with human classification: {query_type}")
             else:
                 # Keep original classification but boost confidence due to human context
                 query_type = state.get("query_type", "general_help")
@@ -442,8 +448,15 @@ class ConfidenceBasedBobRossAgent:
         """Generate response with overall confidence calculation"""
         try:
             text = state["original_text"]
-            query_type = state["query_type"]
+            # Use human classification if provided, otherwise use original query_type
+            query_type = state.get("human_classification") or state["query_type"]
             context = state["context_info"]
+            
+            logger.info(f"🎨 Generating response for query_type: {query_type}")
+            if state.get("human_classification"):
+                logger.info(f"🎨 Using human-provided classification: {state['human_classification']}")
+            else:
+                logger.info(f"🎨 Using original classification: {state['query_type']}")
             classification_confidence = state.get("classification_confidence", 0.5)
             context_confidence = state.get("context_confidence", 0.5)
             steps = state.get("processing_steps", [])
@@ -565,12 +578,12 @@ class ConfidenceBasedBobRossAgent:
             "classify",
             self.should_continue_or_interrupt,
             {
-                "continue": "retrieve",  # High confidence -> continue to retrieve
-                "human_input": END       # Low confidence -> interrupt for human input
+                "continue": "retrieve",    # High confidence -> continue to retrieve
+                "human_input": "human_input"  # Low confidence -> go to human_input node for interruption
             }
         )
         
-        # After human input, continue to retrieve
+        # After human input processing, continue to retrieve
         workflow.add_edge("human_input", "retrieve")
         workflow.add_edge("retrieve", "generate")
         workflow.add_edge("generate", END)
@@ -611,10 +624,22 @@ class ConfidenceBasedBobRossAgent:
             config = {"configurable": {"thread_id": session_id}}
             final_state = self.graph.invoke(initial_state, config)
             
+            # Debug logging
+            logger.info(f"🔍 Final state keys: {list(final_state.keys())}")
+            logger.info(f"🔍 needs_human_input in final_state: {final_state.get('needs_human_input')}")
+            logger.info(f"🔍 bob_ross_response empty: {not final_state.get('bob_ross_response')}")
+            
             # Check if we were interrupted for human input
-            if final_state.get("needs_human_input", False):
+            # Method 1: Check if needs_human_input flag is set
+            # Method 2: Check if workflow didn't complete (no bob_ross_response)
+            workflow_interrupted = (
+                final_state.get("needs_human_input", False) or 
+                not final_state.get("bob_ross_response", "").strip()
+            )
+            
+            if workflow_interrupted and final_state.get("needs_human_input", False):
                 logger.info("🚨 Workflow interrupted - human input required")
-                return {
+                interrupt_response = {
                     "status": "human_input_required",
                     "session_id": session_id,
                     "original_text": text,
@@ -625,6 +650,8 @@ class ConfidenceBasedBobRossAgent:
                     "available_classifications": final_state.get("available_classifications", []),
                     "message": f"I'm only {final_state.get('classification_confidence', 0.0):.0%} confident about how to help with '{text}'. Could you provide more context?"
                 }
+                logger.info(f"🔍 About to return interrupt response: {interrupt_response}")
+                return interrupt_response
             
             # Normal completion
             return {
@@ -664,9 +691,14 @@ class ConfidenceBasedBobRossAgent:
             logger.info(f"Human feedback: {human_feedback}")
             logger.info(f"Human classification: {human_classification}")
             
-            # Update state with human input
             config = {"configurable": {"thread_id": session_id}}
-            current_state = self.graph.get_state(config).values
+            
+            # Get the current state and inspect it
+            state_snapshot = self.graph.get_state(config)
+            logger.info(f"🔍 Current state snapshot: {state_snapshot}")
+            current_state = state_snapshot.values
+            logger.info(f"🔍 Current state keys: {list(current_state.keys())}")
+            logger.info(f"🔍 Current state needs_human_input: {current_state.get('needs_human_input')}")
             
             # Update the state with human input
             updated_state = {
@@ -675,9 +707,23 @@ class ConfidenceBasedBobRossAgent:
                 "human_classification": human_classification,
                 "needs_human_input": False  # Allow processing to continue
             }
+            logger.info(f"🔍 Updated state with human input, needs_human_input set to False")
+            logger.info(f"🔍 About to update state with human_classification: {human_classification}")
             
-            # Continue the workflow from where it was interrupted
-            final_state = self.graph.invoke(updated_state, config)
+            # Update the checkpoint state first
+            self.graph.update_state(config, updated_state)
+            logger.info("🔍 State updated in checkpoint")
+            
+            # Use stream to continue from checkpoint
+            logger.info("🔍 Using stream to continue from updated checkpoint...")
+            events = []
+            for event in self.graph.stream(None, config):
+                logger.info(f"🔍 Stream event: {event}")
+                events.append(event)
+                
+            # Get the final state after streaming
+            final_state = self.graph.get_state(config).values
+            logger.info(f"🔍 Final state after streaming: {list(final_state.keys())}")
             
             return {
                 "status": "completed",

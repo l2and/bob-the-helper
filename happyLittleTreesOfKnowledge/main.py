@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 
 # Load environment variables from .env file in project root
 dotenv_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env')
-print(f"🔧 Loading environment variables from: {dotenv_path}")
+print(f"Loading environment variables from: {dotenv_path}")
 load_dotenv(dotenv_path)
 from langgraph_agent import get_agent
 from flask import Flask, jsonify, request
@@ -86,9 +86,26 @@ def hello():
     return jsonify({
         "message": "🎨 Bob Ross is ready to help with LangChain + Claude",
         "status": "healthy",
-        "endpoints": ["/BobRossHelp", "/health"],
+        "endpoints": ["/BobRossHelp", "/health", "/test"],
         "llm": "Claude Sonnet 4",
         "langsmith_connected": client is not None
+    })
+
+@app.route('/test', methods=['GET', 'POST'])
+def simple_test():
+    """Simple test endpoint that doesn't trigger LangGraph workflow"""
+    import time
+    return jsonify({
+        "status": "success",
+        "message": "Bob Ross Helper is working perfectly!",
+        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "endpoint_type": "simple_test",
+        "server_info": {
+            "flask_env": os.getenv("FLASK_ENV", "production"),
+            "anthropic_configured": bool(os.getenv("ANTHROPIC_API_KEY")),
+            "langsmith_configured": bool(os.getenv("LANGSMITH_API_KEY"))
+        },
+        "note": "This is a lightweight test that doesn't process any text through LangGraph"
     })
 
 @app.route('/health')
@@ -220,12 +237,40 @@ def bob_ross_help():
         logger.info("🚀 Sending request to LangGraph agent")
         result = agent.process_highlighted_text(selected_text)
         
-        # Extract the response and log details
+        logger.info(f"✅ Received response from LangGraph agent")
+        logger.info(f"📊 Response status: {result.get('status', 'unknown')}")
+        logger.info(f"🔍 DEBUG - Result session_id: {result.get('session_id')}")
+        logger.info(f"🔍 DEBUG - Result status: {result.get('status')}")
+        logger.info(f"🔍 DEBUG - Result available_classifications length: {len(result.get('available_classifications', []))}")
+        
+        # Check if we need human input (interrupted workflow) FIRST
+        if result.get("status") == "human_input_required":
+            logger.info("🚨 Workflow interrupted - human input required")
+            response_json = {
+                "status": "human_input_required",
+                "session_id": result.get("session_id"),
+                "original_text": selected_text,
+                "query_type": result.get("query_type"),
+                "classification_confidence": result.get("classification_confidence", 0.0),
+                "processing_steps": result.get("processing_steps", []),
+                "confidence_reasons": result.get("confidence_reasons", []),
+                "available_classifications": result.get("available_classifications", []),
+                "message": result.get("message", "Low confidence - human input needed"),
+                "processing_info": {
+                    "text_length": len(selected_text),
+                    "workflow": "interrupted for human input",
+                    "agent_type": "LangGraph Human-in-the-Loop Agent"
+                }
+            }
+            logger.info(f"🔍 About to send JSON response to Chrome: {response_json}")
+            return jsonify(response_json)
+        
+        # Normal completion path - extract analysis data
         analysis = result.get("analysis", "")
         query_type = result.get("query_type", "unknown")
         processing_steps = result.get("processing_steps", [])
         
-        logger.info(f"✅ Received response from LangGraph agent ({len(analysis)} chars)")
+        logger.info(f"📊 Analysis length: {len(analysis)} chars")
         logger.info(f"🎯 Classified as: {query_type}")
         logger.info(f"📊 Processing steps: {len(processing_steps)}")
         
@@ -241,28 +286,6 @@ def bob_ross_help():
         confidence_breakdown = result.get("confidence_breakdown", {})
         confidence_reasons = result.get("confidence_reasons", [])
         context_category = result.get("context_category", "unknown")
-
-        # Check if we need human input (interrupted workflow)
-        if result.get("status") == "human_input_required":
-            logger.info("🚨 Workflow interrupted - human input required")
-            return jsonify({
-                "status": "human_input_required",
-                "session_id": result.get("session_id"),
-                "original_text": selected_text,
-                "query_type": result.get("query_type"),
-                "classification_confidence": result.get("classification_confidence", 0.0),
-                "processing_steps": result.get("processing_steps", []),
-                "confidence_reasons": result.get("confidence_reasons", []),
-                "available_classifications": result.get("available_classifications", []),
-                "message": result.get("message", "Low confidence - human input needed"),
-                "processing_info": {
-                    "text_length": len(selected_text),
-                    "workflow": "interrupted for human input",
-                    "agent_type": "LangGraph Human-in-the-Loop Agent"
-                }
-            })
-        
-        # Normal completion path
         logger.info(f"📊 Confidence scores - Overall: {overall_confidence:.2f}, Classification: {classification_confidence:.2f}, Context: {context_confidence:.2f}")
 
         return jsonify({
@@ -301,6 +324,7 @@ def bob_ross_help():
 def bob_ross_continue():
     """Continuation endpoint for human-in-the-loop processing"""
     try:
+        logger.info("🔄 ===== CONTINUATION ENDPOINT HIT =====")
         logger.info("🔄 Received continuation request with human input")
         
         # Validate request
