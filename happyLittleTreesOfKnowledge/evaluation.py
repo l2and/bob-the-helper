@@ -1,7 +1,9 @@
 import os
 import json
+import glob
+from datetime import datetime
 from typing import Dict, List, Any, Optional
-from langsmith import Client
+from langsmith import Client, traceable
 from langsmith.evaluation import evaluate
 from langsmith.schemas import Dataset, Example
 from langchain_anthropic import ChatAnthropic
@@ -11,7 +13,7 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-class EnhancedBobRossEvaluator:
+class SimplifiedBobRossEvaluator:
     """Enhanced evaluation with confidence-based metrics"""
     
     def __init__(self):
@@ -22,293 +24,145 @@ class EnhancedBobRossEvaluator:
             model_name="claude-sonnet-4-20250514"
         )
     
-    def create_enhanced_evaluation_dataset(self) -> str:
-        """Create enhanced dataset with confidence expectations"""
-        dataset_name = "bob-ross-confidence-enhanced-eval"
-        
-        test_cases = [
-            {
-                "input": "from langchain import LLMChain",
-                "expected_query_type": "code_explanation",
-                "expected_keywords": ["LLMChain", "sequence", "prompt", "model"],
-                "expected_confidence_range": [0.7, 1.0],  # High confidence expected
-                "difficulty": "easy",
-                "confidence_rationale": "Clear import statement should have high classification confidence"
-            },
-            {
-                "input": "What does this thing do?",
-                "expected_query_type": "general_help",
-                "expected_keywords": ["help", "explanation"],
-                "expected_confidence_range": [0.2, 0.5],  # Low confidence expected
-                "difficulty": "hard",
-                "confidence_rationale": "Vague question should trigger low confidence and clarification request"
-            },
-            {
-                "input": "ImportError: No module named 'langchain'",
-                "expected_query_type": "error_help",
-                "expected_keywords": ["install", "pip", "module", "import"],
-                "expected_confidence_range": [0.8, 1.0],  # Very high confidence expected
-                "difficulty": "easy",
-                "confidence_rationale": "Clear error message should have very high confidence"
-            },
-            {
-                "input": "chain = prompt | model | output_parser",
-                "expected_query_type": "code_explanation",
-                "expected_keywords": ["LCEL", "chain", "pipe", "prompt", "model", "parser"],
-                "expected_confidence_range": [0.6, 0.9],  # Good confidence expected
-                "difficulty": "medium",
-                "confidence_rationale": "LCEL pattern should be recognized with good confidence"
-            },
-            {
-                "input": "How do I use streaming with ChatAnthropic for real-time responses?",
-                "expected_query_type": "api_usage",
-                "expected_keywords": ["ChatAnthropic", "streaming", "async", "callback"],
-                "expected_confidence_range": [0.7, 0.9],  # High confidence expected
-                "difficulty": "medium",
-                "confidence_rationale": "Specific API question should have high confidence"
-            }
-        ]
-        
-        examples = []
-        for i, case in enumerate(test_cases):
-            example = Example(
-                inputs={"text": case["input"]},
-                outputs={
-                    "expected_query_type": case["expected_query_type"],
-                    "expected_keywords": case["expected_keywords"],
-                    "expected_confidence_range": case["expected_confidence_range"],
-                    "confidence_rationale": case["confidence_rationale"],
-                    "difficulty": case["difficulty"]
-                }
-            )
-            examples.append(example)
+    def load_test_cases_from_csv(self, csv_file_path: str, dataset_name: str):
+        """Load test cases from CSV file using LangSmith upload_csv method"""
+        confidence_ranges = {
+            "low": [0.0, 0.4],
+            "medium": [0.4, 0.7], 
+            "high": [0.7, 1.0]
+        }
         
         try:
-            dataset = self.client.create_dataset(
-                dataset_name=dataset_name,
-                description="Enhanced evaluation dataset with confidence scoring expectations"
-            )
-            logger.info(f"Created enhanced dataset: {dataset_name}")
-        except Exception:
-            dataset = self.client.read_dataset(dataset_name=dataset_name)
-            logger.info(f"Using existing enhanced dataset: {dataset_name}")
-        
-        for example in examples:
+            # Check if dataset already exists
             try:
-                self.client.create_example(
-                    inputs=example.inputs,
-                    outputs=example.outputs,
-                    dataset_id=dataset.id
-                )
-            except Exception as e:
-                logger.warning(f"Example might already exist: {e}")
-        
-        return dataset_name
+                existing_dataset = self.client.read_dataset(dataset_name=dataset_name)
+                logger.info(f"Dataset {dataset_name} already exists. Skipping CSV upload to avoid duplicates.")
+                return dataset_name
+            except Exception:
+                logger.info(f"Dataset {dataset_name} doesn't exist. Creating new dataset from CSV.")
+            
+            # Use LangSmith's upload_csv method
+            dataset = self.client.upload_csv(
+                csv_file=csv_file_path,
+                input_keys=['input'],  # Column that contains the input text
+                output_keys=['expected_query_type', 'expected_confidence', 'confidence_rationale', 
+                           'category', 'severity', 'difficulty'],  # Expected output columns
+                name=dataset_name,
+                description="Support ticket evaluation dataset uploaded from CSV"
+            )
+            
+            logger.info(f"Successfully uploaded CSV to dataset: {dataset_name}")
+            logger.info(f"Dataset ID: {dataset.id}")
+            
+            return dataset_name
+            
+        except Exception as e:
+            logger.error(f"Failed to upload CSV {csv_file_path}: {e}")
+            raise
+
     
-    def confidence_calibration_evaluator(self, run, example) -> Dict[str, Any]:
-        """Evaluate how well-calibrated the confidence scores are"""
+    def confidence_calibration(self, inputs: dict, outputs: dict, reference_outputs: dict) -> float:
+        """
+        Evaluate how well-calibrated the agent's confidence scores are for understanding user intent.
+        
+        Tests whether the agent's overall_confidence appropriately reflects the clarity/ambiguity 
+        of the user's request:
+        - High confidence for clear, specific questions (e.g., explicit error messages)
+        - Low confidence for vague, ambiguous questions (e.g., "this doesn't work")
+        - Medium confidence for questions with some context but missing details
+        
+        Returns a calibration score from 0.0 to 1.0:
+        - 1.0 = perfectly calibrated (confidence matches expected range)
+        - 0.0 = completely miscalibrated (confidence far from expected range)
+        """
         try:
             # Get agent outputs
-            overall_confidence = run.outputs.get("overall_confidence", 0.0)
-            classification_confidence = run.outputs.get("classification_confidence", 0.0)
-            context_confidence = run.outputs.get("context_confidence", 0.0)
+            overall_confidence = outputs.get("overall_confidence", 0.0)
             
-            # Get expected confidence range
-            expected_range = example.outputs.get("expected_confidence_range", [0.0, 1.0])
+            # Get expected confidence from reference
+            expected_confidence = reference_outputs.get("expected_confidence", "medium")
+            confidence_ranges = {
+                "low": [0.0, 0.4],
+                "medium": [0.4, 0.7], 
+                "high": [0.7, 1.0]
+            }
+            
+            # Convert label to range
+            expected_range = confidence_ranges.get(expected_confidence, [0.0, 1.0])
             min_expected, max_expected = expected_range
             
-            # Check if confidence is within expected range
-            confidence_appropriate = min_expected <= overall_confidence <= max_expected
-            
             # Calculate calibration score
-            if confidence_appropriate:
+            if min_expected <= overall_confidence <= max_expected:
+                # Perfect calibration
                 calibration_score = 1.0
             else:
-                # Penalize based on how far off we are
+                # Penalize based on distance from expected range
                 if overall_confidence < min_expected:
                     distance = min_expected - overall_confidence
-                elif overall_confidence > max_expected:
+                else:  # overall_confidence > max_expected
                     distance = overall_confidence - max_expected
-                calibration_score = max(0.0, 1.0 - distance * 2)  # Penalty factor of 2
+                
+                # Convert distance to penalty (0.0 to 1.0 scale)
+                # Maximum penalty when distance >= 0.5 (e.g., expecting low 0.2 but got high 0.9)
+                calibration_score = max(0.0, 1.0 - (distance * 2.0))
             
-            return {
-                "key": "confidence_calibration",
-                "score": calibration_score,
-                "comment": f"Overall confidence: {overall_confidence:.2f}, Expected: [{min_expected:.2f}-{max_expected:.2f}], Appropriate: {confidence_appropriate}"
-            }
+            return calibration_score
             
         except Exception as e:
             logger.error(f"Error in confidence calibration evaluator: {e}")
-            return {"key": "confidence_calibration", "score": 0, "comment": f"Evaluation error: {e}"}
+            return 0.0
     
-    def context_quality_evaluator(self, run, example) -> Dict[str, Any]:
-        """Evaluate quality of context retrieval and categorization"""
+    def query_classification(self, inputs: dict, outputs: dict, reference_outputs: dict) -> bool:
+        """
+        Evaluate accuracy of query type classification.
+        
+        Tests whether the agent correctly identified the type of help the user needs
+        (e.g., error_help, api_usage, code_explanation, etc.).
+        
+        Returns True if classification is correct, False otherwise.
+        """
         try:
-            context_category = run.outputs.get("context_category", "unknown")
-            context_confidence = run.outputs.get("context_confidence", 0.0)
-            query_type = run.outputs.get("query_type", "")
+            expected_query_type = reference_outputs.get("expected_query_type")
+            actual_query_type = outputs.get("query_type")
             
-            # Score based on context specificity
-            context_quality_score = 0.5  # Base score
+            # Direct classification accuracy
+            classification_correct = expected_query_type == actual_query_type
             
-            # Bonus for specific context categories
-            specific_categories = [
-                "langgraph_specific", "lcel_specific", "vector_store_specific", 
-                "chain_specific", "agent_specific", "troubleshooting_specific"
-            ]
+            if not classification_correct:
+                logger.debug(f"Classification mismatch - Expected: {expected_query_type}, Actual: {actual_query_type}")
             
-            if context_category in specific_categories:
-                context_quality_score += 0.3
-            elif context_category == "general_langchain":
-                context_quality_score += 0.1
-            
-            # Factor in context confidence
-            context_quality_score = (context_quality_score + context_confidence) / 2
-            
-            return {
-                "key": "context_quality",
-                "score": context_quality_score,
-                "comment": f"Context category: {context_category}, Context confidence: {context_confidence:.2f}"
-            }
+            return classification_correct
             
         except Exception as e:
-            logger.error(f"Error in context quality evaluator: {e}")
-            return {"key": "context_quality", "score": 0, "comment": f"Evaluation error: {e}"}
+            logger.error(f"Error in query classification evaluator: {e}")
+            return False
     
-    def response_appropriateness_evaluator(self, run, example) -> Dict[str, Any]:
-        """Evaluate if response appropriately handles confidence level"""
-        try:
-            bob_response = run.outputs.get("analysis", "")
-            overall_confidence = run.outputs.get("overall_confidence", 0.5)
-            expected_range = example.outputs.get("expected_confidence_range", [0.0, 1.0])
-            
-            # Check if low confidence responses appropriately ask for clarification
-            has_uncertainty_acknowledgment = any(phrase in bob_response.lower() for phrase in [
-                "not entirely certain", "might be", "if you could clarify", 
-                "more context", "not sure", "uncertain", "clarification"
-            ])
-            
-            # Check if high confidence responses are assertive
-            has_confident_language = any(phrase in bob_response.lower() for phrase in [
-                "exactly", "definitely", "clearly", "precisely", "certainly"
-            ])
-            
-            appropriateness_score = 0.5  # Base score
-            
-            # Low confidence should acknowledge uncertainty
-            if overall_confidence < 0.6 and has_uncertainty_acknowledgment:
-                appropriateness_score += 0.4
-            elif overall_confidence < 0.6 and not has_uncertainty_acknowledgment:
-                appropriateness_score -= 0.2
-            
-            # High confidence should be more assertive
-            if overall_confidence > 0.8 and has_confident_language:
-                appropriateness_score += 0.3
-            elif overall_confidence > 0.8 and has_uncertainty_acknowledgment:
-                appropriateness_score -= 0.1  # Shouldn't be uncertain if confident
-            
-            appropriateness_score = max(0.0, min(1.0, appropriateness_score))
-            
-            return {
-                "key": "response_appropriateness",
-                "score": appropriateness_score,
-                "comment": f"Confidence: {overall_confidence:.2f}, Has uncertainty: {has_uncertainty_acknowledgment}, Has confidence: {has_confident_language}"
-            }
-            
-        except Exception as e:
-            logger.error(f"Error in response appropriateness evaluator: {e}")
-            return {"key": "response_appropriateness", "score": 0, "comment": f"Evaluation error: {e}"}
     
-    def enhanced_accuracy_evaluator(self, run, example) -> Dict[str, Any]:
-        """Enhanced accuracy evaluation with confidence weighting"""
-        try:
-            agent_output = run.outputs.get("analysis", "")
-            expected_keywords = example.outputs.get("expected_keywords", [])
-            overall_confidence = run.outputs.get("overall_confidence", 0.5)
-            
-            # Keyword matching score
-            keywords_found = sum(1 for keyword in expected_keywords 
-                                if keyword.lower() in agent_output.lower())
-            keyword_score = keywords_found / len(expected_keywords) if expected_keywords else 0
-            
-            # Query type accuracy
-            expected_query_type = example.outputs.get("expected_query_type")
-            actual_query_type = run.outputs.get("query_type")
-            query_type_correct = expected_query_type == actual_query_type
-            
-            # Base accuracy
-            base_accuracy = (keyword_score + (1 if query_type_correct else 0)) / 2
-            
-            # Confidence-weighted accuracy: penalize overconfidence on wrong answers
-            if base_accuracy < 0.5 and overall_confidence > 0.7:
-                # Overconfident and wrong - penalty
-                final_accuracy = base_accuracy * 0.5
-                confidence_note = "Penalized for overconfidence on incorrect answer"
-            elif base_accuracy > 0.8 and overall_confidence > 0.7:
-                # Confident and correct - bonus
-                final_accuracy = min(1.0, base_accuracy * 1.1)
-                confidence_note = "Bonus for appropriate confidence on correct answer"
-            else:
-                final_accuracy = base_accuracy
-                confidence_note = "Standard scoring"
-            
-            return {
-                "key": "enhanced_accuracy",
-                "score": final_accuracy,
-                "comment": f"Keywords: {keywords_found}/{len(expected_keywords)}, Query type: {query_type_correct}, {confidence_note}"
-            }
-            
-        except Exception as e:
-            logger.error(f"Error in enhanced accuracy evaluator: {e}")
-            return {"key": "enhanced_accuracy", "score": 0, "comment": f"Evaluation error: {e}"}
     
-    def bob_ross_authenticity_evaluator(self, run, example) -> Dict[str, Any]:
-        """Evaluate Bob Ross style authenticity with confidence awareness"""
-        try:
-            response = run.outputs.get("analysis", "")
-            overall_confidence = run.outputs.get("overall_confidence", 0.5)
-            
-            # Bob Ross style indicators
-            bob_indicators = [
-                "friend", "happy little", "beautiful", "wonderful", "gentle",
-                "paint", "canvas", "brush", "color", "masterpiece", 
-                "accident", "mistake", "believe", "confidence"
-            ]
-            
-            indicators_found = sum(1 for indicator in bob_indicators 
-                                 if indicator.lower() in response.lower())
-            
-            # Base style score
-            style_score = min(1.0, indicators_found / 5)
-            
-            # Check for appropriate confidence messaging
-            if overall_confidence < 0.6:
-                # Low confidence should have gentle uncertainty
-                gentle_uncertainty = any(phrase in response.lower() for phrase in [
-                    "i think", "might be", "not entirely sure", "let me know if"
-                ])
-                if gentle_uncertainty:
-                    style_score = min(1.0, style_score + 0.2)
-            
-            return {
-                "key": "bob_ross_authenticity", 
-                "score": style_score,
-                "comment": f"Bob Ross indicators: {indicators_found}, Style score: {style_score:.2f}"
-            }
-            
-        except Exception as e:
-            logger.error(f"Error in authenticity evaluator: {e}")
-            return {"key": "bob_ross_authenticity", "score": 0, "comment": f"Evaluation error: {e}"}
-    
+    @traceable
     def agent_factory(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
-        """Enhanced factory function for evaluation"""
+        """Enhanced factory function for evaluation with @traceable decorator"""
         try:
-            text = inputs.get("text", "")
+            # CSV upload uses column name as key, try both "text" and "input"
+            text = inputs.get("text", "") or inputs.get("input", "")
+            if not text:
+                logger.warning(f"No text found in inputs. Available keys: {list(inputs.keys())}")
+            
             result = self.agent.process_highlighted_text(text)
-            return result
+            
+            # Return in the expected format for evaluators
+            return {
+                "query_type": result.get("query_type", "unknown"),
+                "overall_confidence": result.get("overall_confidence", 0.0),
+                "analysis": result.get("bob_ross_response", ""),
+                # Include other fields that evaluators might need
+                "classification_confidence": result.get("classification_confidence", 0.0),
+                "context_confidence": result.get("context_confidence", 0.0)
+            }
         except Exception as e:
             logger.error(f"Error in enhanced agent factory: {e}")
             return {
+                "query_type": "error",
                 "analysis": f"Error processing text: {e}",
                 "error": str(e),
                 "overall_confidence": 0.1
@@ -317,100 +171,174 @@ class EnhancedBobRossEvaluator:
     def run_enhanced_evaluation(self, dataset_name: str) -> str:
         """Run the enhanced evaluation experiment"""
         try:
-            logger.info(f"Starting enhanced evaluation on dataset: {dataset_name}")
+            logger.info("="*60)
+            logger.info(f"🚀 STARTING EVALUATION")
+            logger.info(f"📊 Dataset: {dataset_name}")
+            logger.info("="*60)
             
-            # Enhanced evaluator suite
+            # Get dataset info for logging
+            try:
+                dataset = self.client.read_dataset(dataset_name=dataset_name)
+                example_count = len(list(self.client.list_examples(dataset_id=dataset.id)))
+                logger.info(f"📝 Processing {example_count} test cases")
+            except Exception as e:
+                logger.warning(f"Could not count examples: {e}")
+            
+            # Simplified evaluator suite - only classification accuracy and confidence calibration
             evaluators = [
-                self.confidence_calibration_evaluator,
-                self.context_quality_evaluator,
-                self.response_appropriateness_evaluator,
-                self.enhanced_accuracy_evaluator,
-                self.bob_ross_authenticity_evaluator
+                self.query_classification,
+                self.confidence_calibration
             ]
+            logger.info(f"🔧 Running 2 evaluators:")
+            logger.info(f"   1️⃣ Query Classification Accuracy")
+            logger.info(f"   2️⃣ Confidence Calibration")
             
-            # Run evaluation with enhanced metrics
-            experiment_results = evaluate(
+            logger.info("⏳ Running evaluation... (this may take a few minutes)")
+            
+            # Run evaluation using LangSmith Client method (as per docs)
+            experiment_results = self.client.evaluate(
                 self.agent_factory,
                 data=dataset_name,
                 evaluators=evaluators,
-                experiment_prefix="bob-ross-confidence-enhanced",
-                description="Enhanced evaluation with confidence scoring and context categorization"
+                experiment_prefix="bob-ross-simplified",
+                description="Simplified evaluation with query classification and confidence calibration",
+                max_concurrency=1,  # Process one at a time for debugging
+                blocking=True  # Wait for completion before returning
             )
             
             experiment_name = experiment_results.experiment_name
-            logger.info(f"Enhanced evaluation completed! Experiment: {experiment_name}")
+            logger.info(f"🔬 Experiment results object: {type(experiment_results)}")
+            logger.info(f"🔬 Experiment results attributes: {dir(experiment_results)}")
             
-            return experiment_name
+            # Try to get results directly from experiment_results if available
+            if hasattr(experiment_results, '_results'):
+                logger.info(f"🔬 Direct results available: {len(experiment_results._results) if experiment_results._results else 0}")
+            if hasattr(experiment_results, '_summary_results'):
+                logger.info(f"🔬 Summary results available: {experiment_results._summary_results}")
+            if hasattr(experiment_results, 'to_pandas'):
+                logger.info("🔬 Pandas conversion available")
+            
+            logger.info("="*60)
+            logger.info(f"✅ EVALUATION COMPLETE!")
+            logger.info(f"🔬 Experiment Name: {experiment_name}")
+            logger.info("="*60)
+            
+            return experiment_name, experiment_results  # Return both for direct analysis
             
         except Exception as e:
-            logger.error(f"Error running enhanced evaluation: {e}")
+            logger.error("="*60)
+            logger.error(f"❌ EVALUATION FAILED: {e}")
+            logger.error("="*60)
             raise
     
-    def analyze_enhanced_results(self, experiment_name: str) -> Dict[str, Any]:
+    def analyze_enhanced_results(self, experiment_name: str, experiment_results=None) -> Dict[str, Any]:
         """Analyze enhanced evaluation results with confidence insights"""
         try:
-            # Get experiment results
-            runs = list(self.client.list_runs(project_name=experiment_name))
+            logger.info("🔍 ANALYZING RESULTS...")
+            logger.info(f"📈 Fetching experiment data: {experiment_name}")
             
-            # Enhanced metrics collection
+            # Try to use experiment_results directly first
             metrics = {
-                "total_runs": len(runs),
+                "total_runs": 0,
+                "query_classification": [],
                 "confidence_calibration": [],
-                "context_quality": [],
-                "response_appropriateness": [],
-                "enhanced_accuracy": [],
-                "bob_ross_authenticity": [],
                 "confidence_distribution": {"low": 0, "medium": 0, "high": 0}
             }
             
-            for run in runs:
-                if hasattr(run, 'feedback_stats') and run.feedback_stats:
-                    feedback = run.feedback_stats
+            if experiment_results and hasattr(experiment_results, 'to_pandas'):
+                logger.info("🔬 Using direct experiment results via pandas...")
+                try:
+                    # Wait for results to complete if needed
+                    if hasattr(experiment_results, 'wait'):
+                        logger.info("⏳ Waiting for experiment to complete...")
+                        experiment_results.wait()
                     
-                    # Collect all metrics
-                    for metric_name in ["confidence_calibration", "context_quality", 
-                                       "response_appropriateness", "enhanced_accuracy", "bob_ross_authenticity"]:
-                        if metric_name in feedback:
-                            metrics[metric_name].append(feedback[metric_name].get('avg', 0))
-                
-                # Analyze confidence distribution
-                if hasattr(run, 'outputs') and run.outputs:
-                    confidence = run.outputs.get('overall_confidence', 0.5)
-                    if confidence < 0.4:
-                        metrics["confidence_distribution"]["low"] += 1
-                    elif confidence < 0.7:
-                        metrics["confidence_distribution"]["medium"] += 1
-                    else:
-                        metrics["confidence_distribution"]["high"] += 1
+                    # Convert to pandas DataFrame
+                    df = experiment_results.to_pandas()
+                    logger.info(f"📊 Found {len(df)} evaluation runs in DataFrame")
+                    
+                    if len(df) > 0:
+                        logger.info(f"🔍 DataFrame columns: {list(df.columns)}")
+                        
+                        # Extract metrics from DataFrame
+                        metrics["total_runs"] = len(df)
+                        
+                        # Look for evaluator results in the DataFrame
+                        for col in df.columns:
+                            if 'query_classification' in col.lower():
+                                # Boolean evaluator - convert True/False to 1.0/0.0 scores
+                                bool_scores = df[col].dropna().tolist()
+                                scores = [1.0 if score else 0.0 for score in bool_scores]
+                                metrics["query_classification"].extend(scores)
+                                logger.info(f"🔍 Found query_classification results: {bool_scores} -> scores: {scores}")
+                            elif 'confidence_calibration' in col.lower():
+                                # Float evaluator - use scores directly
+                                float_scores = df[col].dropna().tolist()
+                                metrics["confidence_calibration"].extend(float_scores)
+                                logger.info(f"🔍 Found confidence_calibration scores: {float_scores}")
+                        
+                        # Analyze confidence distribution from outputs
+                        if 'outputs.overall_confidence' in df.columns:
+                            for confidence in df['outputs.overall_confidence'].dropna():
+                                if confidence < 0.4:
+                                    metrics["confidence_distribution"]["low"] += 1
+                                elif confidence < 0.7:
+                                    metrics["confidence_distribution"]["medium"] += 1
+                                else:
+                                    metrics["confidence_distribution"]["high"] += 1
+                    
+                except Exception as e:
+                    logger.warning(f"Failed to use pandas approach: {e}")
+                    logger.info("🔄 Falling back to direct run query...")
             
-            # Calculate enhanced results
+            # Fallback: Try to query runs directly if pandas approach failed
+            if metrics["total_runs"] == 0:
+                logger.info("🔄 Using fallback method to get runs...")
+                import time
+                time.sleep(3)  # Brief delay
+                
+                try:
+                    runs = list(self.client.list_runs(project_name=experiment_name))
+                    logger.info(f"📊 Found {len(runs)} evaluation runs via direct query")
+                    
+                    if len(runs) > 0:
+                        metrics["total_runs"] = len(runs)
+                        # Process runs for metrics (simplified version)
+                        for run in runs:
+                            if hasattr(run, 'feedback_stats') and run.feedback_stats:
+                                feedback = run.feedback_stats
+                                for metric_name in ["query_classification", "confidence_calibration"]:
+                                    if metric_name in feedback:
+                                        score = feedback[metric_name].get('avg', 0)
+                                        metrics[metric_name].append(score)
+                                        
+                except Exception as e:
+                    logger.warning(f"Fallback method also failed: {e}")
+            
+            # Calculate simplified results
             def safe_avg(scores): 
                 return sum(scores) / len(scores) if scores else 0
             
             results = {
                 "experiment_name": experiment_name,
                 "total_test_cases": metrics["total_runs"],
+                "query_classification": safe_avg(metrics["query_classification"]),
                 "confidence_calibration": safe_avg(metrics["confidence_calibration"]),
-                "context_quality": safe_avg(metrics["context_quality"]),
-                "response_appropriateness": safe_avg(metrics["response_appropriateness"]),
-                "enhanced_accuracy": safe_avg(metrics["enhanced_accuracy"]),
-                "bob_ross_authenticity": safe_avg(metrics["bob_ross_authenticity"]),
                 "confidence_distribution": metrics["confidence_distribution"],
                 "overall_score": safe_avg([
-                    safe_avg(metrics["confidence_calibration"]),
-                    safe_avg(metrics["context_quality"]),
-                    safe_avg(metrics["enhanced_accuracy"]),
-                    safe_avg(metrics["bob_ross_authenticity"])
+                    safe_avg(metrics["query_classification"]),
+                    safe_avg(metrics["confidence_calibration"])
                 ])
             }
             
-            logger.info("🎨 Enhanced Evaluation Results:")
-            logger.info(f"📊 Confidence Calibration: {results['confidence_calibration']:.2f}")
-            logger.info(f"📚 Context Quality: {results['context_quality']:.2f}")
-            logger.info(f"🎯 Response Appropriateness: {results['response_appropriateness']:.2f}")
-            logger.info(f"✅ Enhanced Accuracy: {results['enhanced_accuracy']:.2f}")
-            logger.info(f"🎨 Bob Ross Authenticity: {results['bob_ross_authenticity']:.2f}")
-            logger.info(f"📈 Overall Score: {results['overall_score']:.2f}")
+            logger.info("="*60)
+            logger.info("🎨 EVALUATION RESULTS:")
+            logger.info("="*60)
+            logger.info(f"🎯 Query Classification: {results['query_classification']:.3f} ({results['query_classification']*100:.1f}%)")
+            logger.info(f"📊 Confidence Calibration: {results['confidence_calibration']:.3f} ({results['confidence_calibration']*100:.1f}%)")
+            logger.info(f"📈 Overall Score: {results['overall_score']:.3f} ({results['overall_score']*100:.1f}%)")
+            logger.info(f"📋 Test Cases Processed: {results['total_test_cases']}")
+            logger.info("="*60)
             
             return results
             
@@ -418,37 +346,88 @@ class EnhancedBobRossEvaluator:
             logger.error(f"Error analyzing enhanced results: {e}")
             return {"error": str(e)}
 
+def load_all_sample_datasets(evaluator, sample_dir="sample_datasets") -> str:
+    """Load CSV files from sample_datasets directory into single dataset"""
+    dataset_name = "bob-ross-support-tickets"
+    
+    # Find all CSV files in the sample_datasets directory
+    csv_files = glob.glob(os.path.join(os.getcwd(), sample_dir, "*.csv"))
+    
+    if not csv_files:
+        logger.warning(f"No CSV files found in {sample_dir} directory")
+        return None
+    
+    logger.info(f"Found {len(csv_files)} CSV files to process")
+    
+    # Process each CSV file (though typically you'll have one main file)
+    for csv_file in csv_files:
+        try:
+            logger.info(f"Processing {csv_file}...")
+            evaluator.load_test_cases_from_csv(csv_file, dataset_name)
+            
+        except Exception as e:
+            logger.error(f"Failed to load {csv_file}: {e}")
+    
+    return dataset_name
+
 def main():
-    """Enhanced evaluation main function"""
+    """Simplified evaluation main function"""
     try:
-        evaluator = EnhancedBobRossEvaluator()
+        print("="*80)
+        print("🎨 BOB ROSS SUPPORT TICKETS EVALUATION")
+        print("="*80)
         
-        # Create enhanced dataset
-        logger.info("Creating enhanced evaluation dataset with confidence expectations...")
-        dataset_name = evaluator.create_enhanced_evaluation_dataset()
+        evaluator = SimplifiedBobRossEvaluator()
         
-        # Run enhanced evaluation
-        logger.info("Running enhanced evaluation with confidence metrics...")
-        experiment_name = evaluator.run_enhanced_evaluation(dataset_name)
+        # Load all sample datasets into single dataset
+        logger.info("📂 STEP 1: Loading CSV datasets...")
+        dataset_name = load_all_sample_datasets(evaluator)
         
-        # Analyze enhanced results
-        logger.info("Analyzing enhanced results...")
-        results = evaluator.analyze_enhanced_results(experiment_name)
+        if not dataset_name:
+            logger.error("❌ No datasets loaded. Please add CSV files to the sample_datasets directory.")
+            return
         
-        # Save enhanced results
-        with open("enhanced_evaluation_results.json", "w") as f:
-            json.dump(results, f, indent=2)
+        logger.info(f"✅ Dataset loaded: {dataset_name}")
         
-        print(f"\n🎨 Enhanced Bob Ross Agent Evaluation Complete!")
-        print(f"🔬 Experiment: {experiment_name}")
-        print(f"📊 Confidence Calibration: {results.get('confidence_calibration', 0):.2f}")
-        print(f"📚 Context Quality: {results.get('context_quality', 0):.2f}")
-        print(f"🎯 Overall Score: {results.get('overall_score', 0):.2f}")
-        print(f"📁 Results saved to: enhanced_evaluation_results.json")
-        print(f"🌐 View in LangSmith: https://smith.langchain.com")
+        # Run evaluation on the consolidated dataset
+        logger.info("🔄 STEP 2: Running evaluation...")
+        
+        try:
+            # Run evaluation
+            experiment_name, experiment_results = evaluator.run_enhanced_evaluation(dataset_name)
+            
+            # Analyze results
+            logger.info("📊 STEP 3: Analyzing results...")
+            results = evaluator.analyze_enhanced_results(experiment_name, experiment_results)
+            
+            # Save results in timestamped directory
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            results_dir = ".evaluation_results"
+            os.makedirs(results_dir, exist_ok=True)
+            
+            results_filename = os.path.join(results_dir, f"{timestamp}.json")
+            with open(results_filename, "w") as f:
+                json.dump(results, f, indent=2)
+            
+            logger.info(f"💾 Results saved to: {results_filename}")
+            
+            print("\n" + "="*80)
+            print("🎉 EVALUATION COMPLETE!")
+            print("="*80)
+            print(f"🔬 Experiment: {experiment_name}")
+            print(f"📊 Dataset: {dataset_name}")
+            print(f"🎯 Query Classification: {results.get('query_classification', 0)*100:.1f}%")
+            print(f"📊 Confidence Calibration: {results.get('confidence_calibration', 0)*100:.1f}%")
+            print(f"📈 Overall Score: {results.get('overall_score', 0)*100:.1f}%")
+            print(f"📁 Results: {results_filename}")
+            print(f"🌐 LangSmith: https://smith.langchain.com")
+            print("="*80)
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to evaluate dataset {dataset_name}: {e}")
         
     except Exception as e:
-        logger.error(f"Enhanced evaluation failed: {e}")
+        logger.error(f"❌ Evaluation setup failed: {e}")
         raise
 
 if __name__ == "__main__":
