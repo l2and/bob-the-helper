@@ -4,9 +4,14 @@ Confidence Calibration Evaluator
 Evaluates how well-calibrated the agent's confidence scores are for understanding user intent.
 """
 
-import logging
+import os
+import sys
 
-logger = logging.getLogger(__name__)
+# Add path to import logger_config from happyLittleTreesOfKnowledge
+sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'happyLittleTreesOfKnowledge'))
+from logger_config import setup_logger
+
+logger = setup_logger(__name__)
 
 
 def confidence_calibration(inputs: dict, outputs: dict, reference_outputs: dict) -> float:

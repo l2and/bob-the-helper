@@ -4,9 +4,14 @@ Query Classification Evaluator
 Evaluates the accuracy of query type classification.
 """
 
-import logging
+import os
+import sys
 
-logger = logging.getLogger(__name__)
+# Add path to import logger_config from happyLittleTreesOfKnowledge
+sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'happyLittleTreesOfKnowledge'))
+from logger_config import setup_logger
+
+logger = setup_logger(__name__)
 
 
 def query_classification(inputs: dict, outputs: dict, reference_outputs: dict) -> bool:

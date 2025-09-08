@@ -1,22 +1,21 @@
 # main.py
 import os
-import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+
 from dotenv import load_dotenv
+from flask import Flask, jsonify, request
+from flask_cors import CORS
+from langchain_anthropic import ChatAnthropic
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.prompts import ChatPromptTemplate
+from langsmith import Client
 
 # Load environment variables from .env file in project root
 dotenv_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env')
 print(f"Loading environment variables from: {dotenv_path}")
 load_dotenv(dotenv_path)
+
 from langgraph_agent import get_agent
-from flask import Flask, jsonify, request
-from flask_cors import CORS
-from langchain_core.output_parsers import StrOutputParser
-from langsmith import Client
-from langchain_anthropic import ChatAnthropic
-from langchain_core.prompts import ChatPromptTemplate
-from typing import Dict, Any, Callable
 from logger_config import setup_logger
 
 logger = setup_logger(__name__)
@@ -26,15 +25,9 @@ app = Flask(__name__)
 CORS(app, origins=["*"], methods=["GET", "POST", "OPTIONS"], 
      allow_headers=["Content-Type", "Authorization"])
 
-
-def run_with_timeout(func: Callable, timeout_seconds: int = 30, *args, **kwargs):
-    """Run a function with a timeout"""
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(func, *args, **kwargs)
-        try:
-            return future.result(timeout=timeout_seconds)
-        except FutureTimeoutError:
-            raise TimeoutError(f"Operation timed out after {timeout_seconds} seconds")
+# ===========================
+# Configuration & Setup
+# ===========================
 
 # Initialize LangSmith client
 try:
@@ -52,8 +45,8 @@ def create_llm():
         ChatAnthropic.model_rebuild()
         
         return ChatAnthropic(
-            anthropic_api_key=os.getenv("ANTHROPIC_API_KEY"),
-            model_name="claude-sonnet-4-20250514",
+            api_key=os.getenv("ANTHROPIC_API_KEY"),
+            model="claude-sonnet-4-20250514",
             temperature=0.7,  # A bit of creativity for Bob Ross
             max_tokens=1000,
             timeout=None,  
@@ -80,124 +73,9 @@ Remember: "There are no mistakes, only happy little learning opportunities!" """
     ("human", "Please help me understand this text: {question}")
 ])
 
-@app.route('/')
-def hello():
-    """Health check endpoint"""
-    return jsonify({
-        "message": "🎨 Bob Ross is ready to help with LangChain + Claude",
-        "status": "healthy",
-        "endpoints": ["/BobRossHelp", "/health", "/test"],
-        "llm": "Claude Sonnet 4",
-        "langsmith_connected": client is not None
-    })
-
-@app.route('/test', methods=['GET', 'POST'])
-def simple_test():
-    """Simple test endpoint that doesn't trigger LangGraph workflow"""
-    import time
-    return jsonify({
-        "status": "success",
-        "message": "Bob Ross Helper is working perfectly!",
-        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "endpoint_type": "simple_test",
-        "server_info": {
-            "flask_env": os.getenv("FLASK_ENV", "production"),
-            "anthropic_configured": bool(os.getenv("ANTHROPIC_API_KEY")),
-            "langsmith_configured": bool(os.getenv("LANGSMITH_API_KEY"))
-        },
-        "note": "This is a lightweight test that doesn't process any text through LangGraph"
-    })
-
-@app.route('/health')
-def health_check():
-    """Detailed health check for monitoring"""
-    logger.info("🏥 Starting comprehensive health check")
-    
-    logger.info("📊 Initializing health status structure")
-    health_status = {
-        "status": "healthy",
-        "timestamp": os.popen("date").read().strip(),
-        "environment": os.getenv("FLASK_ENV", "production")
-    }
-    logger.info(f"📊 Basic health status initialized: {health_status}")
-    
-    # LangSmith detailed status
-    logger.info("🔍 Beginning LangSmith connectivity assessment")
-    langsmith_status = {
-        "connected": client is not None,
-        "api_key_configured": bool(os.getenv("LANGSMITH_API_KEY"))
-    }
-    logger.info(f"🔍 LangSmith initial status: connected={langsmith_status['connected']}, api_key_configured={langsmith_status['api_key_configured']}")
-    
-    if client:
-        # Test prompt access - simplified without complex timeout
-        logger.info("🔗 Testing LangSmith prompt access...")
-        try:
-            test_prompt = client.pull_prompt("l2and/bob_ross_help", include_model=True)
-            langsmith_status["prompt_accessible"] = True
-            langsmith_status["prompt_name"] = "l2and/bob_ross_help"
-            langsmith_status["prompt_type"] = type(test_prompt).__name__
-            logger.info("✅ LangSmith prompt test successful")
-        except Exception as e:
-            langsmith_status["prompt_accessible"] = False
-            langsmith_status["prompt_error"] = str(e)
-            logger.warning(f"❌ LangSmith prompt test failed: {e}")
-        
-        # Test API connectivity - simplified without complex timeout
-        logger.info("🌐 Testing LangSmith API connection...")
-        try:
-            list(client.list_runs(limit=1))  # Convert to list to force execution
-            langsmith_status["api_connection"] = "successful"
-            logger.info("✅ LangSmith API connection test successful")
-        except Exception as e:
-            langsmith_status["api_connection"] = "failed"
-            langsmith_status["api_error"] = str(e)
-            logger.warning(f"❌ LangSmith API test failed: {e}")
-    else:
-        langsmith_status["reason"] = "API key not configured or client initialization failed"
-    
-    health_status["langsmith"] = langsmith_status
-    
-    # Claude/Anthropic detailed status
-    claude_status = {
-        "api_key_configured": bool(os.getenv("ANTHROPIC_API_KEY")),
-        "model": "claude-sonnet-4-20250514"
-    }
-    
-    try:
-        # Test Claude LLM creation - simplified without complex timeout
-        logger.info("🤖 Testing Claude LLM connectivity...")
-        llm = create_llm()
-        claude_status["llm_accessible"] = True
-        claude_status["temperature"] = 0.7
-        claude_status["max_tokens"] = 1000
-        logger.info("✅ Claude LLM initialized successfully")
-        
-        # Test a simple API call - simplified without complex timeout
-        logger.info("🔗 Testing Claude API with simple prompt...")
-        test_chain = FALLBACK_PROMPT | llm | StrOutputParser()
-        test_result = test_chain.invoke({"question": "test"})
-        claude_status["api_test"] = "successful"
-        claude_status["test_response_length"] = len(test_result)
-        logger.info("✅ Claude API test successful")
-        
-    except Exception as e:
-        claude_status["llm_accessible"] = False
-        claude_status["error"] = str(e)
-        health_status["status"] = "unhealthy"
-        logger.error(f"❌ Claude health check failed: {e}")
-    
-    health_status["claude"] = claude_status
-    
-    # Current configuration
-    health_status["current_config"] = {
-        "prompt_source": "fallback" if not client else "attempting_langsmith",
-        "fallback_prompt_configured": FALLBACK_PROMPT is not None,
-        "cors_enabled": True
-    }
-    
-    logger.info(f"Health check completed with status: {health_status['status']}")
-    return jsonify(health_status)
+# ===========================
+# Main Business Logic Routes
+# ===========================
 
 @app.route('/BobRossHelp', methods=['POST'])
 def bob_ross_help():
@@ -389,6 +267,132 @@ def bob_ross_continue():
             "status": "error"
         }), 500
 
+# ===========================
+# Utility & Health Routes
+# ===========================
+
+@app.route('/')
+def hello():
+    """Health check endpoint"""
+    return jsonify({
+        "message": "🎨 Bob Ross is ready to help with LangChain + Claude",
+        "status": "healthy",
+        "endpoints": ["/BobRossHelp", "/health", "/test"],
+        "llm": "Claude Sonnet 4",
+        "langsmith_connected": client is not None
+    })
+
+@app.route('/health')
+def health_check():
+    """Detailed health check for monitoring"""
+    logger.info("🏥 Starting comprehensive health check")
+    
+    logger.info("📊 Initializing health status structure")
+    health_status = {
+        "status": "healthy",
+        "timestamp": os.popen("date").read().strip(),
+        "environment": os.getenv("FLASK_ENV", "production")
+    }
+    logger.info(f"📊 Basic health status initialized: {health_status}")
+    
+    # LangSmith detailed status
+    logger.info("🔍 Beginning LangSmith connectivity assessment")
+    langsmith_status = {
+        "connected": client is not None,
+        "api_key_configured": bool(os.getenv("LANGSMITH_API_KEY"))
+    }
+    logger.info(f"🔍 LangSmith initial status: connected={langsmith_status['connected']}, api_key_configured={langsmith_status['api_key_configured']}")
+    
+    if client:
+        # Test prompt access - simplified without complex timeout
+        logger.info("🔗 Testing LangSmith prompt access...")
+        try:
+            test_prompt = client.pull_prompt("l2and/bob_ross_help", include_model=True)
+            langsmith_status["prompt_accessible"] = True
+            langsmith_status["prompt_name"] = "l2and/bob_ross_help"
+            langsmith_status["prompt_type"] = type(test_prompt).__name__
+            logger.info("✅ LangSmith prompt test successful")
+        except Exception as e:
+            langsmith_status["prompt_accessible"] = False
+            langsmith_status["prompt_error"] = str(e)
+            logger.warning(f"❌ LangSmith prompt test failed: {e}")
+        
+        # Test API connectivity - simplified without complex timeout
+        logger.info("🌐 Testing LangSmith API connection...")
+        try:
+            list(client.list_runs(limit=1))  # Convert to list to force execution
+            langsmith_status["api_connection"] = "successful"
+            logger.info("✅ LangSmith API connection test successful")
+        except Exception as e:
+            langsmith_status["api_connection"] = "failed"
+            langsmith_status["api_error"] = str(e)
+            logger.warning(f"❌ LangSmith API test failed: {e}")
+    else:
+        langsmith_status["reason"] = "API key not configured or client initialization failed"
+    
+    health_status["langsmith"] = langsmith_status
+    
+    # Claude/Anthropic detailed status
+    claude_status = {
+        "api_key_configured": bool(os.getenv("ANTHROPIC_API_KEY")),
+        "model": "claude-sonnet-4-20250514"
+    }
+    
+    try:
+        # Test Claude LLM creation - simplified without complex timeout
+        logger.info("🤖 Testing Claude LLM connectivity...")
+        llm = create_llm()
+        claude_status["llm_accessible"] = True
+        claude_status["temperature"] = 0.7
+        claude_status["max_tokens"] = 1000
+        logger.info("✅ Claude LLM initialized successfully")
+        
+        # Test a simple API call - simplified without complex timeout
+        logger.info("🔗 Testing Claude API with simple prompt...")
+        test_chain = FALLBACK_PROMPT | llm | StrOutputParser()
+        test_result = test_chain.invoke({"question": "test"})
+        claude_status["api_test"] = "successful"
+        claude_status["test_response_length"] = len(test_result)
+        logger.info("✅ Claude API test successful")
+        
+    except Exception as e:
+        claude_status["llm_accessible"] = False
+        claude_status["error"] = str(e)
+        health_status["status"] = "unhealthy"
+        logger.error(f"❌ Claude health check failed: {e}")
+    
+    health_status["claude"] = claude_status
+    
+    # Current configuration
+    health_status["current_config"] = {
+        "prompt_source": "fallback" if not client else "attempting_langsmith",
+        "fallback_prompt_configured": FALLBACK_PROMPT is not None,
+        "cors_enabled": True
+    }
+    
+    logger.info(f"Health check completed with status: {health_status['status']}")
+    return jsonify(health_status)
+
+@app.route('/test', methods=['GET', 'POST'])
+def simple_test():
+    """Simple test endpoint that doesn't trigger LangGraph workflow"""
+    return jsonify({
+        "status": "success",
+        "message": "Bob Ross Helper is working perfectly!",
+        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "endpoint_type": "simple_test",
+        "server_info": {
+            "flask_env": os.getenv("FLASK_ENV", "production"),
+            "anthropic_configured": bool(os.getenv("ANTHROPIC_API_KEY")),
+            "langsmith_configured": bool(os.getenv("LANGSMITH_API_KEY"))
+        },
+        "note": "This is a lightweight test that doesn't process any text through LangGraph"
+    })
+
+# ===========================
+# Error Handlers
+# ===========================
+
 @app.errorhandler(404)
 def not_found(error):
     """Custom 404 handler"""
@@ -406,6 +410,10 @@ def internal_error(error):
         "error": "Internal server error",
         "message": "Even Bob Ross has off days. Please try again!"
     }), 500
+
+# ===========================
+# Application Entry Point
+# ===========================
 
 if __name__ == '__main__':
     # Enhanced debugging configuration
