@@ -7,7 +7,12 @@ from langsmith import Client, traceable
 from langsmith.evaluation import evaluate
 from langsmith.schemas import Dataset, Example
 from langchain_anthropic import ChatAnthropic
+import sys
+import os
+# Add happyLittleTreesOfKnowledge directory to path to import langgraph_agent
+sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'happyLittleTreesOfKnowledge'))
 from langgraph_agent import get_agent  # Your enhanced agent
+from evaluators import confidence_calibration, query_classification
 import logging
 
 logging.basicConfig(level=logging.INFO)
@@ -61,85 +66,10 @@ class SimplifiedBobRossEvaluator:
             raise
 
     
-    def confidence_calibration(self, inputs: dict, outputs: dict, reference_outputs: dict) -> float:
-        """
-        Evaluate how well-calibrated the agent's confidence scores are for understanding user intent.
-        
-        Tests whether the agent's overall_confidence appropriately reflects the clarity/ambiguity 
-        of the user's request:
-        - High confidence for clear, specific questions (e.g., explicit error messages)
-        - Low confidence for vague, ambiguous questions (e.g., "this doesn't work")
-        - Medium confidence for questions with some context but missing details
-        
-        Returns a calibration score from 0.0 to 1.0:
-        - 1.0 = perfectly calibrated (confidence matches expected range)
-        - 0.0 = completely miscalibrated (confidence far from expected range)
-        """
-        try:
-            # Get agent outputs
-            overall_confidence = outputs.get("overall_confidence", 0.0)
-            
-            # Get expected confidence from reference
-            expected_confidence = reference_outputs.get("expected_confidence", "medium")
-            confidence_ranges = {
-                "low": [0.0, 0.4],
-                "medium": [0.4, 0.7], 
-                "high": [0.7, 1.0]
-            }
-            
-            # Convert label to range
-            expected_range = confidence_ranges.get(expected_confidence, [0.0, 1.0])
-            min_expected, max_expected = expected_range
-            
-            # Calculate calibration score
-            if min_expected <= overall_confidence <= max_expected:
-                # Perfect calibration
-                calibration_score = 1.0
-            else:
-                # Penalize based on distance from expected range
-                if overall_confidence < min_expected:
-                    distance = min_expected - overall_confidence
-                else:  # overall_confidence > max_expected
-                    distance = overall_confidence - max_expected
-                
-                # Convert distance to penalty (0.0 to 1.0 scale)
-                # Maximum penalty when distance >= 0.5 (e.g., expecting low 0.2 but got high 0.9)
-                calibration_score = max(0.0, 1.0 - (distance * 2.0))
-            
-            return calibration_score
-            
-        except Exception as e:
-            logger.error(f"Error in confidence calibration evaluator: {e}")
-            return 0.0
-    
-    def query_classification(self, inputs: dict, outputs: dict, reference_outputs: dict) -> bool:
-        """
-        Evaluate accuracy of query type classification.
-        
-        Tests whether the agent correctly identified the type of help the user needs
-        (e.g., error_help, api_usage, code_explanation, etc.).
-        
-        Returns True if classification is correct, False otherwise.
-        """
-        try:
-            expected_query_type = reference_outputs.get("expected_query_type")
-            actual_query_type = outputs.get("query_type")
-            
-            # Direct classification accuracy
-            classification_correct = expected_query_type == actual_query_type
-            
-            if not classification_correct:
-                logger.debug(f"Classification mismatch - Expected: {expected_query_type}, Actual: {actual_query_type}")
-            
-            return classification_correct
-            
-        except Exception as e:
-            logger.error(f"Error in query classification evaluator: {e}")
-            return False
     
     
     
-    @traceable
+    @traceable(name="agent_factory")
     def agent_factory(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
         """Enhanced factory function for evaluation with @traceable decorator"""
         try:
@@ -147,25 +77,42 @@ class SimplifiedBobRossEvaluator:
             text = inputs.get("text", "") or inputs.get("input", "")
             if not text:
                 logger.warning(f"No text found in inputs. Available keys: {list(inputs.keys())}")
+                return {
+                    "query_type": "error",
+                    "analysis": "No input text provided",
+                    "overall_confidence": 0.0,
+                    "classification_confidence": 0.0,
+                    "context_confidence": 0.0
+                }
             
+            logger.info(f"Processing text: {text[:100]}...")  # Log first 100 chars for debugging
+            
+            # Use the process_highlighted_text method which is the correct interface
             result = self.agent.process_highlighted_text(text)
+            
+            # The result is already the final outputs dictionary
+            final_outputs = result if isinstance(result, dict) else {}
             
             # Return in the expected format for evaluators
             return {
-                "query_type": result.get("query_type", "unknown"),
-                "overall_confidence": result.get("overall_confidence", 0.0),
-                "analysis": result.get("bob_ross_response", ""),
+                "query_type": final_outputs.get("query_type", "unknown"),
+                "overall_confidence": final_outputs.get("overall_confidence", 0.0),
+                "analysis": final_outputs.get("bob_ross_response", ""),
                 # Include other fields that evaluators might need
-                "classification_confidence": result.get("classification_confidence", 0.0),
-                "context_confidence": result.get("context_confidence", 0.0)
+                "classification_confidence": final_outputs.get("classification_confidence", 0.0),
+                "context_confidence": final_outputs.get("context_confidence", 0.0)
             }
         except Exception as e:
             logger.error(f"Error in enhanced agent factory: {e}")
+            import traceback
+            traceback.print_exc()
             return {
                 "query_type": "error",
                 "analysis": f"Error processing text: {e}",
                 "error": str(e),
-                "overall_confidence": 0.1
+                "overall_confidence": 0.1,
+                "classification_confidence": 0.0,
+                "context_confidence": 0.0
             }
     
     def run_enhanced_evaluation(self, dataset_name: str) -> str:
@@ -186,8 +133,8 @@ class SimplifiedBobRossEvaluator:
             
             # Simplified evaluator suite - only classification accuracy and confidence calibration
             evaluators = [
-                self.query_classification,
-                self.confidence_calibration
+                query_classification,
+                confidence_calibration
             ]
             logger.info(f"🔧 Running 2 evaluators:")
             logger.info(f"   1️⃣ Query Classification Accuracy")
@@ -195,15 +142,17 @@ class SimplifiedBobRossEvaluator:
             
             logger.info("⏳ Running evaluation... (this may take a few minutes)")
             
-            # Run evaluation using LangSmith Client method (as per docs)
-            experiment_results = self.client.evaluate(
+            # Use the evaluate function from langsmith.evaluation module
+            from langsmith.evaluation import evaluate
+            
+            experiment_results = evaluate(
                 self.agent_factory,
                 data=dataset_name,
                 evaluators=evaluators,
                 experiment_prefix="bob-ross-simplified",
                 description="Simplified evaluation with query classification and confidence calibration",
                 max_concurrency=1,  # Process one at a time for debugging
-                blocking=True  # Wait for completion before returning
+                client=self.client
             )
             
             experiment_name = experiment_results.experiment_name
