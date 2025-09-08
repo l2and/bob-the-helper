@@ -40,21 +40,21 @@ graph TB
         C --> D[POST /BobRossHelp API]
     end
     
-    subgraph "Cloud Run Backend"
+    subgraph "Local Flask Server"
         D --> E[Flask API Endpoint]
         E --> F[LangGraph Agent]
-    end
-    
-    subgraph "LangGraph Workflow"
-        F --> G[Query Classification Node]
-        G --> H{Confidence Check}
-        H -->|< 70%| I[Human Input Required]
-        H -->|≥ 70%| J[Context Retrieval Node]
-        I --> K[Wait for User Clarification]
-        K --> L[Continue with Human Input]
-        L --> J
-        J --> M[Response Generation Node]
-        M --> N[Bob Ross Style Response]
+        
+        subgraph "LangGraph Workflow"
+            F --> G[Query Classification Node]
+            G --> H{Confidence Check}
+            H -->|< 70%| I[Human Input Required]
+            H -->|≥ 70%| J[Context Retrieval Node]
+            I --> K[Wait for User Clarification]
+            K --> L[Continue with Human Input]
+            L --> J
+            J --> M[Response Generation Node]
+            M --> N[Bob Ross Style Response]
+        end
     end
     
     subgraph "Response Handling"
@@ -68,10 +68,10 @@ graph TB
     
     O --> T[Display Response Modal]
     
-    classDef userAction fill:#e1f5fe
-    classDef processing fill:#f3e5f5
-    classDef decision fill:#fff3e0
-    classDef humanLoop fill:#ffebee
+    classDef userAction fill:#e1f5fe,color:#000
+    classDef processing fill:#f3e5f5,color:#000
+    classDef decision fill:#fff3e0,color:#000
+    classDef humanLoop fill:#ffebee,color:#000
     
     class A,B,Q,R userAction
     class G,J,M processing

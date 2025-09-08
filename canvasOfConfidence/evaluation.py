@@ -93,11 +93,22 @@ class SimplifiedBobRossEvaluator:
             # The result is already the final outputs dictionary
             final_outputs = result if isinstance(result, dict) else {}
             
-            # Return in the expected format for evaluators
+            # Sanitize and truncate outputs to prevent UI issues
+            def sanitize_output(text, max_length=2000):
+                if not isinstance(text, str):
+                    return str(text)
+                # Remove problematic characters that might cause UI issues
+                text = text.replace('\x00', '').replace('\x01', '').replace('\x02', '')
+                # Truncate if too long
+                if len(text) > max_length:
+                    text = text[:max_length] + "... [truncated]"
+                return text
+            
+            # Return in the expected format for evaluators with sanitized outputs
             return {
                 "query_type": final_outputs.get("query_type", "unknown"),
                 "overall_confidence": final_outputs.get("overall_confidence", 0.0),
-                "analysis": final_outputs.get("bob_ross_response", ""),
+                "analysis": sanitize_output(final_outputs.get("bob_ross_response", "")),
                 # Include other fields that evaluators might need
                 "classification_confidence": final_outputs.get("classification_confidence", 0.0),
                 "context_confidence": final_outputs.get("context_confidence", 0.0)
@@ -145,6 +156,7 @@ class SimplifiedBobRossEvaluator:
             # Use the evaluate function from langsmith.evaluation module
             from langsmith.evaluation import evaluate
             
+            # The evaluate function will automatically create an experiment and link all runs
             experiment_results = evaluate(
                 self.agent_factory,
                 data=dataset_name,
@@ -152,25 +164,76 @@ class SimplifiedBobRossEvaluator:
                 experiment_prefix="bob-ross-simplified",
                 description="Simplified evaluation with query classification and confidence calibration",
                 max_concurrency=1,  # Process one at a time for debugging
-                client=self.client
+                client=self.client,
+                metadata={"evaluation_type": "bob_ross_confidence_calibration"}  # Add metadata for tracking
             )
             
             experiment_name = experiment_results.experiment_name
-            logger.info(f"🔬 Experiment results object: {type(experiment_results)}")
-            logger.info(f"🔬 Experiment results attributes: {dir(experiment_results)}")
             
-            # Try to get results directly from experiment_results if available
-            if hasattr(experiment_results, '_results'):
-                logger.info(f"🔬 Direct results available: {len(experiment_results._results) if experiment_results._results else 0}")
-            if hasattr(experiment_results, '_summary_results'):
-                logger.info(f"🔬 Summary results available: {experiment_results._summary_results}")
-            if hasattr(experiment_results, 'to_pandas'):
-                logger.info("🔬 Pandas conversion available")
+            # Debug: Check all attributes of experiment_results
+            logger.info(f"🔬 Experiment attributes: {[attr for attr in dir(experiment_results) if not attr.startswith('_')]}")
+            
+            # Try to get experiment ID from different possible locations
+            experiment_id = None
+            if hasattr(experiment_results, 'experiment_id'):
+                experiment_id = experiment_results.experiment_id
+            elif hasattr(experiment_results, 'id'):
+                experiment_id = experiment_results.id
+            
+            # Try to get it from the results manager
+            if not experiment_id and hasattr(experiment_results, '_manager'):
+                manager = experiment_results._manager
+                if hasattr(manager, 'experiment_id'):
+                    experiment_id = manager.experiment_id
+                elif hasattr(manager, 'experiment'):
+                    experiment_id = getattr(manager.experiment, 'id', None)
             
             logger.info("="*60)
             logger.info(f"✅ EVALUATION COMPLETE!")
             logger.info(f"🔬 Experiment Name: {experiment_name}")
+            logger.info(f"🔬 Experiment ID: {experiment_id}")
+            
+            # Try to get direct experiment URL
+            if experiment_id:
+                experiment_url = f"https://smith.langchain.com/experiments/{experiment_id}"
+            else:
+                experiment_url = f"https://smith.langchain.com/experiments?name={experiment_name}"
+            
+            logger.info(f"🔗 Direct Experiment URL: {experiment_url}")
             logger.info("="*60)
+            
+            # Log detailed experiment info for debugging
+            logger.info(f"🔬 Experiment results object: {type(experiment_results)}")
+            
+            # Try to get results directly from experiment_results if available
+            if hasattr(experiment_results, '_results'):
+                results_count = len(experiment_results._results) if experiment_results._results else 0
+                logger.info(f"🔬 Direct results available: {results_count}")
+                
+                # Debug: Log details of first result if available
+                if results_count > 0:
+                    first_result = experiment_results._results[0]
+                    logger.info(f"🔬 First result keys: {list(first_result.keys()) if hasattr(first_result, 'keys') else 'Not a dict'}")
+                    if hasattr(first_result, 'get'):
+                        logger.info(f"🔬 First result run_id: {first_result.get('id', 'No ID')}")
+                        logger.info(f"🔬 First result example_id: {first_result.get('reference_example_id', 'No example ID')}")
+            
+            if hasattr(experiment_results, '_summary_results'):
+                logger.info(f"🔬 Summary results available: {experiment_results._summary_results}")
+            if hasattr(experiment_results, 'to_pandas'):
+                logger.info("🔬 Pandas conversion available")
+                
+            # Additional debugging: Try to query runs directly by experiment name
+            try:
+                logger.info("🔍 Attempting to query runs by experiment name...")
+                runs_by_name = list(self.client.list_runs(project_name=experiment_name, limit=5))
+                logger.info(f"🔬 Found {len(runs_by_name)} runs by experiment name")
+                if runs_by_name:
+                    first_run = runs_by_name[0]
+                    logger.info(f"🔬 First run ID: {first_run.id}")
+                    logger.info(f"🔬 First run reference_example_id: {getattr(first_run, 'reference_example_id', 'None')}")
+            except Exception as e:
+                logger.warning(f"🔬 Could not query runs by experiment name: {e}")
             
             return experiment_name, experiment_results  # Return both for direct analysis
             
@@ -270,6 +333,9 @@ class SimplifiedBobRossEvaluator:
             
             results = {
                 "experiment_name": experiment_name,
+                "experiment_id": getattr(experiment_results, 'experiment_id', None) if experiment_results else None,
+                "langsmith_url": f"https://smith.langchain.com/experiments/{experiment_name}",
+                "dataset_name": "bob-ross-support-tickets",
                 "total_test_cases": metrics["total_runs"],
                 "query_classification": safe_avg(metrics["query_classification"]),
                 "confidence_calibration": safe_avg(metrics["confidence_calibration"]),
@@ -277,7 +343,8 @@ class SimplifiedBobRossEvaluator:
                 "overall_score": safe_avg([
                     safe_avg(metrics["query_classification"]),
                     safe_avg(metrics["confidence_calibration"])
-                ])
+                ]),
+                "evaluation_timestamp": datetime.now().isoformat()
             }
             
             logger.info("="*60)
@@ -364,12 +431,15 @@ def main():
             print("🎉 EVALUATION COMPLETE!")
             print("="*80)
             print(f"🔬 Experiment: {experiment_name}")
+            if results.get('experiment_id'):
+                print(f"🆔 Experiment ID: {results.get('experiment_id')}")
             print(f"📊 Dataset: {dataset_name}")
             print(f"🎯 Query Classification: {results.get('query_classification', 0)*100:.1f}%")
             print(f"📊 Confidence Calibration: {results.get('confidence_calibration', 0)*100:.1f}%")
             print(f"📈 Overall Score: {results.get('overall_score', 0)*100:.1f}%")
             print(f"📁 Results: {results_filename}")
-            print(f"🌐 LangSmith: https://smith.langchain.com")
+            print(f"🔗 LangSmith Experiment: {results.get('langsmith_url', 'https://smith.langchain.com')}")
+            print(f"🌐 LangSmith Dashboard: https://smith.langchain.com")
             print("="*80)
             
         except Exception as e:
