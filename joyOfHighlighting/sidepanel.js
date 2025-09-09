@@ -137,6 +137,7 @@ function showResult(result, fullResponse, originalText, isRerun = false) {
         welcomeScreen.style.display = 'none';
         progressSection.style.display = 'none';
         resultsSection.style.display = 'flex';
+        resultsSection.style.flexDirection = 'column';
         copyBtn.style.display = 'flex';
         
         // Store current result for copying

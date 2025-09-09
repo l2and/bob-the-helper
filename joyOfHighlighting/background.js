@@ -31,7 +31,16 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
     
     if (selectedText) {
       try {
-        const result = await queryLangChain(selectedText);
+        console.log('🚀 Starting LangChain query...');
+        
+        // Open side panel and show progress
+        await chrome.sidePanel.open({ tabId: tab.id });
+        chrome.runtime.sendMessage({
+          target: 'sidepanel',
+          action: 'showProgress'
+        });
+        
+        const responseData = await queryLangChain(selectedText);
         
         console.log('✅ Got result from LangChain:', responseData);
         console.log('📤 Sending showResult message to sidepanel');
@@ -40,15 +49,39 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
         chrome.runtime.sendMessage({
           target: 'sidepanel',
           action: 'showResult',
-          result: result
+          result: responseData.analysis || responseData,
+          fullResponse: responseData,
+          originalText: selectedText
         });
       } catch (error) {
-        console.error('Error querying LangChain:', error);
-        chrome.tabs.sendMessage(tab.id, {
+        console.error('❌ Error querying LangChain:', error);
+        
+        // Open side panel even for errors
+        await chrome.sidePanel.open({ tabId: tab.id });
+        
+        chrome.runtime.sendMessage({
+          target: 'sidepanel',
           action: 'showResult',
-          result: 'Sorry, there was an error processing your request. Please check your LangChain endpoint configuration.'
+          result: `Sorry, there was an error processing your request: ${error.message}`,
+          fullResponse: { error: error.message, overall_confidence: 0.0 }
         });
       }
+    } else {
+      console.warn('⚠️ No text selected');
+    }
+  } else if (info.menuItemId === 'bob-ross-settings') {
+    // Open settings popup
+    console.log('⚙️ Settings menu clicked');
+    try {
+      await chrome.windows.create({
+        url: 'popup.html',
+        type: 'popup',
+        width: 400,
+        height: 500,
+        focused: true
+      });
+    } catch (error) {
+      console.error('❌ Error opening settings popup:', error);
     }
   }
 });
@@ -181,5 +214,67 @@ chrome.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
   if (message.action === 'textSelected') {
     // Store the selected text for potential use
     chrome.storage.local.set({ lastSelectedText: message.text });
+  } else if (message.action === 'rerunWithContext') {
+    try {
+      console.log('🔄 Rerunning with additional context...');
+      const enhancedText = `${message.originalText}\n\nAdditional context: ${message.additionalContext}`;
+      const responseData = await queryLangChain(enhancedText);
+      
+      chrome.runtime.sendMessage({
+        target: 'sidepanel',
+        action: 'showResult',
+        result: responseData.analysis || responseData,
+        fullResponse: responseData,
+        originalText: message.originalText,
+        isRerun: true
+      });
+      
+      sendResponse({ success: true });
+    } catch (error) {
+      console.error('❌ Error in rerun:', error);
+      chrome.runtime.sendMessage({
+        target: 'sidepanel',
+        action: 'showResult',
+        result: `Sorry, there was an error processing your request: ${error.message}`,
+        fullResponse: { error: error.message, overall_confidence: 0.0 },
+        isRerun: true
+      });
+      sendResponse({ success: false, error: error.message });
+    }
+  } else if (message.action === 'continueWithHumanInput') {
+    try {
+      console.log('🤚 Continuing with human input...');
+      console.log('Session ID:', message.sessionId);
+      console.log('Human feedback:', message.humanFeedback);
+      console.log('Human classification:', message.humanClassification);
+      
+      const responseData = await continueWithHumanInput(
+        message.sessionId,
+        message.humanFeedback,
+        message.humanClassification
+      );
+      
+      chrome.runtime.sendMessage({
+        target: 'sidepanel',
+        action: 'showResult',
+        result: responseData.analysis || responseData,
+        fullResponse: responseData,
+        originalText: responseData.original_text || 'Unknown',
+        isRerun: true
+      });
+      
+      sendResponse({ success: true });
+    } catch (error) {
+      console.error('❌ Error in human input continuation:', error);
+      chrome.runtime.sendMessage({
+        target: 'sidepanel',
+        action: 'showResult',
+        result: `Sorry, there was an error processing your input: ${error.message}`,
+        fullResponse: { error: error.message, overall_confidence: 0.0 },
+        isRerun: true
+      });
+      sendResponse({ success: false, error: error.message });
+    }
   }
+  return true; // Keep message channel open for async response
 });
