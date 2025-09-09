@@ -4,6 +4,23 @@ chrome.runtime.onInstalled.addListener(() => {
     title: 'Bob Ross, HELP! 🎨',
     contexts: ['selection']
   });
+  
+  // Add settings context menu for extension icon
+  chrome.contextMenus.create({
+    id: 'bob-ross-settings',
+    title: 'Settings',
+    contexts: ['action']
+  });
+});
+
+// Handle toolbar icon clicks to toggle side panel
+chrome.action.onClicked.addListener(async (tab) => {
+  console.log('🎨 Toolbar icon clicked, toggling side panel');
+  try {
+    await chrome.sidePanel.open({ tabId: tab.id });
+  } catch (error) {
+    console.error('❌ Error opening side panel:', error);
+  }
 });
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
@@ -15,37 +32,56 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
     if (selectedText) {
       try {
         console.log('🚀 Starting LangChain query...');
+        
+        // Open side panel and show progress
+        await chrome.sidePanel.open({ tabId: tab.id });
+        chrome.runtime.sendMessage({
+          target: 'sidepanel',
+          action: 'showProgress'
+        });
+        
         const responseData = await queryLangChain(selectedText);
         
         console.log('✅ Got result from LangChain:', responseData);
-        console.log('📤 Sending showResult message to tab:', tab.id);
+        console.log('📤 Sending showResult message to sidepanel');
         
-        chrome.tabs.sendMessage(tab.id, {
+        // Send to side panel instead of content script
+        chrome.runtime.sendMessage({
+          target: 'sidepanel',
           action: 'showResult',
           result: responseData.analysis || responseData,
           fullResponse: responseData,
           originalText: selectedText
-        }, (response) => {
-          if (chrome.runtime.lastError) {
-            console.error('❌ Error sending message to content script:', chrome.runtime.lastError);
-          } else {
-            console.log('✅ Message sent successfully to content script');
-          }
         });
       } catch (error) {
         console.error('❌ Error querying LangChain:', error);
-        chrome.tabs.sendMessage(tab.id, {
+        
+        // Open side panel even for errors
+        await chrome.sidePanel.open({ tabId: tab.id });
+        
+        chrome.runtime.sendMessage({
+          target: 'sidepanel',
           action: 'showResult',
           result: `Sorry, there was an error processing your request: ${error.message}`,
           fullResponse: { error: error.message, overall_confidence: 0.0 }
-        }, (response) => {
-          if (chrome.runtime.lastError) {
-            console.error('❌ Error sending error message to content script:', chrome.runtime.lastError);
-          }
         });
       }
     } else {
       console.warn('⚠️ No text selected');
+    }
+  } else if (info.menuItemId === 'bob-ross-settings') {
+    // Open settings popup
+    console.log('⚙️ Settings menu clicked');
+    try {
+      await chrome.windows.create({
+        url: 'popup.html',
+        type: 'popup',
+        width: 400,
+        height: 500,
+        focused: true
+      });
+    } catch (error) {
+      console.error('❌ Error opening settings popup:', error);
     }
   }
 });
@@ -184,7 +220,8 @@ chrome.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
       const enhancedText = `${message.originalText}\n\nAdditional context: ${message.additionalContext}`;
       const responseData = await queryLangChain(enhancedText);
       
-      chrome.tabs.sendMessage(sender.tab.id, {
+      chrome.runtime.sendMessage({
+        target: 'sidepanel',
         action: 'showResult',
         result: responseData.analysis || responseData,
         fullResponse: responseData,
@@ -195,7 +232,8 @@ chrome.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
       sendResponse({ success: true });
     } catch (error) {
       console.error('❌ Error in rerun:', error);
-      chrome.tabs.sendMessage(sender.tab.id, {
+      chrome.runtime.sendMessage({
+        target: 'sidepanel',
         action: 'showResult',
         result: `Sorry, there was an error processing your request: ${error.message}`,
         fullResponse: { error: error.message, overall_confidence: 0.0 },
@@ -216,7 +254,8 @@ chrome.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
         message.humanClassification
       );
       
-      chrome.tabs.sendMessage(sender.tab.id, {
+      chrome.runtime.sendMessage({
+        target: 'sidepanel',
         action: 'showResult',
         result: responseData.analysis || responseData,
         fullResponse: responseData,
@@ -227,7 +266,8 @@ chrome.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
       sendResponse({ success: true });
     } catch (error) {
       console.error('❌ Error in human input continuation:', error);
-      chrome.tabs.sendMessage(sender.tab.id, {
+      chrome.runtime.sendMessage({
+        target: 'sidepanel',
         action: 'showResult',
         result: `Sorry, there was an error processing your input: ${error.message}`,
         fullResponse: { error: error.message, overall_confidence: 0.0 },

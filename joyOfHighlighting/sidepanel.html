@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bob Ross Helper</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: Georgia, serif;
+            background: #f8f9fa;
+            color: #333;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #8B4513 0%, #A0522D 100%);
+            color: white;
+            padding: 16px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+        }
+
+        .header h2 {
+            font-size: 18px;
+            font-weight: bold;
+            margin: 0;
+        }
+
+        .header-buttons {
+            display: flex;
+            gap: 8px;
+        }
+
+        .header-btn {
+            background: rgba(255, 255, 255, 0.2);
+            border: 2px solid white;
+            border-radius: 6px;
+            width: 32px;
+            height: 32px;
+            font-size: 16px;
+            cursor: pointer;
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s ease;
+        }
+
+        .header-btn:hover {
+            background: rgba(255, 255, 255, 0.3);
+            transform: scale(1.1);
+        }
+
+        .banner {
+            display: flex;
+            justify-content: center;
+            padding: 10px;
+            background: #fff;
+            border-bottom: 1px solid #ddd;
+        }
+
+        .banner img {
+            max-width: 100%;
+            height: auto;
+            display: block;
+        }
+
+        .content-container {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .welcome-screen {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            flex: 1;
+            padding: 40px 20px;
+            text-align: center;
+        }
+
+        .welcome-icon {
+            font-size: 48px;
+            margin-bottom: 16px;
+        }
+
+        .welcome-title {
+            font-size: 20px;
+            color: #8B4513;
+            margin-bottom: 12px;
+            font-weight: bold;
+        }
+
+        .welcome-text {
+            color: #666;
+            line-height: 1.5;
+            margin-bottom: 20px;
+        }
+
+        .instructions {
+            background: #e3f2fd;
+            border: 1px solid #2196f3;
+            border-radius: 8px;
+            padding: 16px;
+            margin-top: 20px;
+        }
+
+        .instructions h4 {
+            color: #1976d2;
+            margin-bottom: 8px;
+        }
+
+        .instructions ul {
+            color: #1565c0;
+            margin-left: 20px;
+        }
+
+        .progress-section {
+            display: none;
+            padding: 20px;
+            border-bottom: 1px solid #ddd;
+            background: #fff;
+        }
+
+        .progress-title {
+            font-weight: bold;
+            color: #8B4513;
+            margin-bottom: 10px;
+        }
+
+        .progress-bar {
+            background: #e0e0e0;
+            border-radius: 10px;
+            overflow: hidden;
+            height: 8px;
+            margin-bottom: 10px;
+        }
+
+        .progress-fill {
+            background: linear-gradient(90deg, #8B4513, #A0522D);
+            height: 100%;
+            width: 0%;
+            transition: width 0.3s ease;
+        }
+
+        .progress-message {
+            font-size: 14px;
+            color: #666;
+        }
+
+        .results-section {
+            display: none;
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+            background: #fff;
+        }
+
+        .confidence-indicator {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+            margin-bottom: 15px;
+            padding: 10px;
+            background: #f8f9fa;
+            border-radius: 6px;
+            border-left: 4px solid #28a745;
+        }
+
+        .confidence-high { border-left-color: #28a745; }
+        .confidence-medium { border-left-color: #ffc107; }
+        .confidence-low { border-left-color: #dc3545; }
+
+        .response-content {
+            line-height: 1.6;
+            margin-bottom: 20px;
+            font-size: 15px;
+        }
+
+        .refinement-section {
+            margin-top: 20px;
+            padding: 15px;
+            background: #fff3cd;
+            border: 1px solid #ffeaa7;
+            border-radius: 6px;
+        }
+
+        .refinement-title {
+            margin: 0 0 10px 0;
+            color: #856404;
+            font-size: 16px;
+        }
+
+        .refinement-description {
+            margin: 0 0 15px 0;
+            font-size: 13px;
+            color: #856404;
+            line-height: 1.4;
+        }
+
+        .button-container {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            margin-bottom: 15px;
+        }
+
+        .context-btn {
+            background: #fff;
+            border: 1px solid #ffc107;
+            border-radius: 4px;
+            padding: 6px 10px;
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .context-btn:hover {
+            background: #ffc107;
+        }
+
+        .context-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .text-input-section {
+            margin-top: 15px;
+        }
+
+        .text-input-label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: bold;
+            font-size: 13px;
+            color: #856404;
+        }
+
+        .context-textarea {
+            width: 100%;
+            height: 60px;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 13px;
+            resize: vertical;
+            box-sizing: border-box;
+            font-family: Arial, sans-serif;
+        }
+
+        .rerun-button {
+            background: #28a745;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            padding: 10px 20px;
+            font-size: 13px;
+            cursor: pointer;
+            margin-top: 10px;
+            transition: background 0.2s;
+        }
+
+        .rerun-button:hover {
+            background: #218838;
+        }
+
+        .rerun-button:disabled {
+            background: #6c757d;
+            cursor: not-allowed;
+        }
+
+        .footer {
+            padding: 15px 20px;
+            background: #f8f9fa;
+            border-top: 1px solid #ddd;
+            font-size: 12px;
+            color: #666;
+            text-align: center;
+        }
+
+        .human-input-message {
+            background: #e3f2fd;
+            padding: 15px;
+            border-radius: 6px;
+            border-left: 4px solid #2196f3;
+            margin-bottom: 15px;
+        }
+
+        .human-input-title {
+            font-weight: bold;
+            color: #1976d2;
+            margin-bottom: 8px;
+        }
+
+        .human-input-text {
+            color: #1565c0;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h2>🎨 Bob Ross Helper</h2>
+        <div class="header-buttons">
+            <button id="copyBtn" class="header-btn" title="Copy to clipboard" style="display: none;">📋</button>
+            <button id="clearBtn" class="header-btn" title="Clear results">🗑️</button>
+        </div>
+    </div>
+
+    <div class="banner">
+        <img src="images/joyOfHelping.png" alt="Joy of Helping Banner" />
+    </div>
+
+    <div class="content-container">
+        <div id="welcomeScreen" class="welcome-screen">
+            <div class="welcome-icon">🎨</div>
+            <div class="welcome-title">Welcome to Bob Ross Helper!</div>
+            <div class="welcome-text">
+                Highlight text on any webpage, right-click, and select "Bob Ross, HELP! 🎨" to get friendly assistance with your questions.
+            </div>
+            <div class="instructions">
+                <h4>How to use:</h4>
+                <ul>
+                    <li>Highlight text on any webpage</li>
+                    <li>Right-click and select "Bob Ross, HELP! 🎨"</li>
+                    <li>Watch your results appear here in real-time</li>
+                    <li>Use the refinement options for better answers</li>
+                </ul>
+            </div>
+        </div>
+
+        <div id="progressSection" class="progress-section">
+            <div class="progress-title">🎨 Bob Ross is thinking...</div>
+            <div class="progress-bar">
+                <div id="progressFill" class="progress-fill"></div>
+            </div>
+            <div id="progressMessage" class="progress-message">Analyzing your text...</div>
+        </div>
+
+        <div id="resultsSection" class="results-section">
+            <div id="confidenceIndicator" class="confidence-indicator" style="display: none;">
+                <div id="confidenceText"></div>
+                <div id="confidenceDescription"></div>
+            </div>
+
+            <div id="humanInputMessage" class="human-input-message" style="display: none;">
+                <div class="human-input-title">🤚 I need your help!</div>
+                <div id="humanInputText" class="human-input-text"></div>
+            </div>
+
+            <div id="responseContent" class="response-content"></div>
+
+            <div id="refinementSection" class="refinement-section" style="display: none;">
+                <h4 class="refinement-title">🎯 Need more specific help?</h4>
+                <p class="refinement-description">
+                    I'm not entirely confident about this response. You can help me provide a better answer by:<br>
+                    <strong>Click a button below to continue immediately, or provide your own context:</strong>
+                </p>
+
+                <div id="buttonContainer" class="button-container"></div>
+
+                <div class="text-input-section">
+                    <label class="text-input-label">Or provide your own context:</label>
+                    <textarea id="contextTextarea" class="context-textarea" placeholder="Add more context about what you're trying to do or understand..."></textarea>
+                    <button id="rerunButton" class="rerun-button">🔄 Get Better Answer</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="footer" class="footer">
+        Click 📋 to copy • Click 🗑️ to clear • Powered by LangGraph + Claude
+    </div>
+
+    <script src="sidepanel.js"></script>
+</body>
+</html>
