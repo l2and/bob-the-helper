@@ -200,17 +200,6 @@ https://smith.langchain.com
 - **Painting Metaphors**: Technical concepts explained through art analogies
 
 
-## Fix Log
-
-### **Fix Chrome extension issues with modal not popping up every time `=(` **
-**Goal**: Ensure Chrome Extension is reliable
-
-### **Identify correct place to grab experiment id**
-**goal**: All SDK run evaluations, are associated with the correct experiment id.
-
-- **Issues**:
-  - go through and capture the experiment id
-
 ## 🎯 Future Roadmap
 
 ### **📚 Documentation Ingestion with GCS**
